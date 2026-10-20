@@ -1,3 +1,4 @@
 [submodule "external/PS2Recomp"]
 	path = external/PS2Recomp
-	url = https://github.com/ran-j/PS2Recomp.git
+	url = https://github.com/boubou666/PS2Recomp.git
+	branch = vp2s/overlay-dispatch
