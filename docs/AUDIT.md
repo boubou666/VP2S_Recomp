@@ -218,7 +218,7 @@ Conditions et risques à traiter tôt :
 
 1. **Capture mémoire en combat** (PCSX2, sauvegarde d'état) pour trancher la question du mode B et vérifier quels modules sont résidents.
 2. ~~**Extracteur complet**~~ — **fait** : `tools/extract.py` (voir `tools/README.md`). En 30 s, il sort les 25 modules prêts pour le recompilateur (tous conformes à leur segment ELF), les modules IOP, l'index des 25 558 chaînes et, en option, toutes les données. La disposition exacte de `vp2.bin` (installation sur disque dur) n'est pas reproduite : le port lira l'ISO directement.
-3. **Choisir la base du recompilateur** (évaluer PS2Recomp), puis recompiler l'ELF principal et le module 2 (titre).
+3. ~~**Choisir la base du recompilateur**~~ — **fait** : PS2Recomp, dans un fork avec gestion des overlays par emplacement. Voir `docs/RECOMPILER.md` (l'ELF et le module 3 se recompilent déjà sans erreur).
 4. **HLE minimale** : noyau EE, libcdvd redirigée vers `vp2.bin`, libpad2, et un GS « logiciel » pour voir une image.
 5. **Jalon : l'écran titre** affiché nativement.
 

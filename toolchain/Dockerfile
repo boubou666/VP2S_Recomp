@@ -1,4 +1,5 @@
-# VP2S_Recomp toolchain: ISO extraction, MIPS/R5900 binutils, Python analysis.
+# VP2S_Recomp toolchain: ISO extraction, MIPS/R5900 binutils, Python analysis,
+# and a C++20 build environment (CMake, Ninja, g++) for the recompiler.
 # Build:  docker build -t vp2s-toolchain toolchain
 # Run:    docker run --rm -it -v D:\VP2S_Recomp:/work vp2s-toolchain
 FROM ubuntu:24.04
@@ -15,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xxd \
         git \
         ca-certificates \
+        cmake \
+        ninja-build \
+        g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Python libs for ELF parsing and analysis scripts
