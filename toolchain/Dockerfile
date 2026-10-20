@@ -19,6 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
         ninja-build \
         g++ \
+        pkg-config \
+        libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev \
+        libgl1-mesa-dev libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Python libs for ELF parsing and analysis scripts

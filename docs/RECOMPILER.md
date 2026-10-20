@@ -61,7 +61,25 @@ L'export Ghidra a aussi **identifié automatiquement 55 appels système** (`Crea
 - **God of War** ([KIexster/god-of-war-recomp](https://github.com/KIexster/god-of-war-recomp), [Waffle565/God-Of-War-Native-Port](https://github.com/Waffle565/God-Of-War-Native-Port)) : ELF unique, sans overlay de code (ses « overlays » sont du microcode VU).
 - Aucun portage PS2Recomp connu ne gère **plusieurs overlays à la même adresse**. Côté PS1, [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp) compile les overlays à l'avance et choisit le code natif par vérification des octets, ce qui est le principe retenu ci-dessous.
 
-## Gestion des overlays (à ajouter au fork)
+## Gestion des overlays — implémentée
+
+Fork : sous-module `external/PS2Recomp`, branche `vp2s/overlay-dispatch`, à partir du commit amont `eb8688b`. Documentation utilisateur : section « Overlay modules » du README du fork.
+
+| Partie | Fichiers |
+|---|---|
+| Recompilateur : `module_name`, `module_load`, `module_guard_size` dans `[general]`. Noms, en-têtes et fichiers préfixés par le module ; table privée ; octets de garde lus à l'adresse de chargement. | `config_manager.cpp`, `types.h`, `code_generator.*`, `ps2_recompiler.*`, `function_emitter.cpp`, `function_table_emitter.*` |
+| Runtime : registre `ps2_overlays` (enregistrement, résolveur par garde ou personnalisé, remplacement ciblé). `lookupFunction`, `hasFunction` et `replaceFunction` consultent le module résident quand l'entrée de la table ELF est vide. | `ps2_overlay_modules.h/.cpp`, `ps2_runtime.cpp`, `ps2_memory.h` |
+| Tests | `ps2xTest/src/ps2_overlay_module_tests.cpp` (6 tests) |
+| Enveloppe ELF : section `.modhdr` pour l'en-tête du module, qui sert de garde | `tools/wrap_elf.py` |
+
+Validation (2026-10-20) :
+- suite de tests PS2Recomp sous Linux (g++ 13) : **451 sur 451**. Les 445 tests d'origine passent toujours (référence mesurée sur le commit amont non modifié : 445 sur 445), plus nos 6 tests ;
+- modules 2 et 3, **tous deux à `0x35ec80`**, recompilés en mode module : la garde de chacun est son en-tête (identifiant 2 contre 3) ;
+- compilation C++ de tout le module 2 et des fonctions du module 3 dans la même plage d'adresses, avec les deux fichiers d'enregistrement : **2 544 fichiers sur 2 544, 2 542 fonctions définies, 0 symbole en double** (`scripts/check_module_link.py`).
+
+Ce qui n'est pas encore vérifié : l'exécution réelle, qui demande un runtime complet lié au jeu (étape 4 du plan).
+
+### Conception retenue
 
 Ce qui rend l'ajout simple chez nous :
 - **l'en-tête de chaque module reste en mémoire à l'adresse de son emplacement** (audit, section 7.3). L'identifiant du module résident se lit donc en mémoire (`emplacement + 4`), sans avoir à intercepter le chargeur ;
@@ -76,7 +94,7 @@ Conception :
    - en option, vérifier une empreinte des premiers octets (garde à la psxrecomp) en mode debug.
 4. **`replaceFunction` et les correctifs par jeu** : étendus aux tables de module.
 
-Estimation : quelques jours à une semaine pour les points 2 à 4, tests compris.
+Écart avec ce plan : le recompilateur prend la garde à l'adresse de chargement (les 64 premiers octets, soit l'en-tête du module chez nous) au lieu de lire un identifiant à un décalage fixe. C'est plus générique, et un jeu peut toujours installer un résolveur plus rapide (`ps2_overlays::setResidentResolver`).
 
 ## Alternatives écartées
 
@@ -96,14 +114,34 @@ Estimation : quelques jours à une semaine pour les points 2 à 4, tests compris
 
 ## Plan proposé
 
-1. **Fork de PS2Recomp**, ajouté au projet comme sous-module, figé sur un commit.
-2. **Overlays** : préfixe par module dans le recompilateur, et répartition consciente des emplacements dans le runtime.
+1. ~~**Fork de PS2Recomp**~~ — fait (sous-module `external/PS2Recomp`).
+2. ~~**Overlays**~~ — fait (voir « Gestion des overlays — implémentée »).
 3. **Pipeline de build** : `extract.py` → `wrap_elf.py` → export Ghidra → `ps2_recomp` pour l'ELF et les 25 modules → compilation du runtime et du code généré.
 4. **Premier démarrage** : ELF + modules 1 et 2 (socle et titre), IOP avec les IRX d'origine, GS logiciel.
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 
 ## Reproduire les tests
+
+Suite de tests du fork (recompilateur `ps2_recomp` compris). La compilation demande `-march=x86-64-v2` sous g++ ; le montage `/deps` est facultatif et réutilise des sources de dépendances déjà téléchargées :
+
+```bash
+docker run --rm -v D:\VP2S_Recomp\external\PS2Recomp:/src -v D:\VP2S_Recomp:/work vp2s-toolchain sh /work/scripts/build_ps2recomp_tests.sh linux-tests
+```
+
+Recompilation d'un module en mode module (4ᵉ argument), avec le recompilateur du fork :
+
+```bash
+docker run --rm -e RECOMP=/src/out/linux-tests/ps2xRecomp/ps2_recomp -v D:\VP2S_Recomp\external\PS2Recomp:/src -v D:\VP2S_Recomp:/work vp2s-toolchain sh /work/scripts/run_recomp.sh /work/work/recomp/mod003.toml /work/work/recomp/mod003.elf /work/work/recomp/module_mod003 mod003
+```
+
+Compilation croisée de deux modules à la même adresse :
+
+```bash
+docker run --rm -v D:\VP2S_Recomp\external\PS2Recomp:/src -v D:\VP2S_Recomp:/work vp2s-toolchain python3 -I /work/scripts/check_module_link.py /work/work/recomp/module_mod002 /work/work/recomp/module_mod003
+```
+
+Évaluation initiale, sur le clone amont non modifié :
 
 ```bash
 docker run --rm -v D:\Tools\src\PS2Recomp:/src -v D:\VP2S_Recomp:/work vp2s-toolchain sh /work/scripts/build_ps2recomp.sh
