@@ -8,6 +8,7 @@ ghidra/
 # Decompiler output and dumps derived from the game
 work/
 out/
+build/
 
 # Python
 __pycache__/

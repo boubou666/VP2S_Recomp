@@ -2,6 +2,29 @@
 
 Outils d'atelier, lancés une fois sur la machine de développement. Ils ne font pas partie du port : le port sera du code natif issu de la recompilation statique du MIPS du jeu. `extract.py` fournit au recompilateur le code des modules, qui est chiffré et compressé sur le disque.
 
+## `pipeline.py` — de l'ISO au C++ recompilé
+
+Orchestrateur, à lancer sous Windows depuis la racine du projet (Python 3.10 ou plus, sans dépendance) :
+
+```bash
+python tools/pipeline.py
+```
+
+| Étape | Rôle | Sortie (`build/`) |
+|---|---|---|
+| `extract` | `extract.py` dans Docker | `extract/` |
+| `wrap` | copie de l'ELF principal, `wrap_elf.py` pour chaque module | `elf/main.elf`, `elf/modNNN.elf` |
+| `ghidra` | analyse Ghidra headless (processeur `r5900` imposé) et export PS2Recomp, en une session | `ghidra/export/<nom>.toml`, `<nom>_functions.csv` |
+| `tool` | compile `ps2_recomp` depuis le fork (`external/PS2Recomp`) | `external/PS2Recomp/out/linux-recomp/` |
+| `recomp` | `ps2_recomp` sur chaque entrée ; les modules en mode module (`module_name = "modNNN"`) | `recomp/<nom>/`, `recomp/<nom>.log` |
+| `report` | chiffres par entrée et totaux | `report.md`, `report.json` |
+
+Chaque étape saute le travail dont les sorties sont plus récentes que les entrées. Options : `--only <étape>`, `--from <étape>`, `--force`, `--inputs main,mod003`.
+
+Prérequis : Docker et l'image `vp2s-toolchain`, Ghidra (`GHIDRA_INSTALL_DIR`), et le **zip** de l'extension Emotion Engine pour cette version de Ghidra (`VP2S_GHIDRA_EE_ZIP`, par défaut dans `D:\Tools\downloads`). Le dossier facultatif `build/deps` contient les sources des dépendances CMake (`<nom>-src`), pour compiler sans réseau.
+
+> Pourquoi le zip de l'extension : lancé via l'alias `python` de Windows (Store ou gestionnaire d'installation Python), Python et ses processus enfants voient un `%APPDATA%` redirigé. Ghidra n'y trouve pas les extensions installées et se rabat **silencieusement** sur un langage MIPS64 générique. L'orchestrateur donne donc à Ghidra son propre dossier de réglages (`XDG_CONFIG_HOME` → `build/ghidra/settings`), y installe l'extension, et refuse de continuer si un autre langage que `r5900` apparaît dans le journal.
+
 ## `extract.py` — extracteur du disque
 
 Python 3.10 ou plus, sans dépendance (pas de 7-Zip, pas de paquets tiers).
@@ -25,6 +48,10 @@ Contenu de `out/` :
 | `manifest.json` | résumé, erreurs, et emplacements trouvés / déclarés |
 
 Résultat attendu sur SLES-54645 : 25 642 en-têtes, 25 558 chaînes, 0 erreur, 25 modules (tous conformes à leur segment ELF), 10 modules IOP.
+
+## `wrap_elf.py` — module → ELF
+
+Enveloppe un module extrait dans un ELF R5900 minimal, chargé à son adresse, avec l'en-tête du module en mémoire (section `.modhdr`, qui sert de garde au mode module de PS2Recomp), puis `.text`, `.data` et `.bss` d'après l'en-tête.
 
 ## `slz.py` — compression SLZ / chiffrement SLE
 

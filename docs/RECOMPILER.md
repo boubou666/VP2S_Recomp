@@ -116,7 +116,7 @@ Conception :
 
 1. ~~**Fork de PS2Recomp**~~ — fait (sous-module `external/PS2Recomp`).
 2. ~~**Overlays**~~ — fait (voir « Gestion des overlays — implémentée »).
-3. **Pipeline de build** : `extract.py` → `wrap_elf.py` → export Ghidra → `ps2_recomp` pour l'ELF et les 25 modules → compilation du runtime et du code généré.
+3. ~~**Pipeline de build**~~ — fait pour la partie recompilation : `tools/pipeline.py` (voir `tools/README.md`). Résultat du 2026-10-20 : **26 entrées sur 26** (ELF + 25 modules), **7 191 fonctions**, **8,69 M lignes de C++** (55 492 fichiers, 338 Mo), **0 erreur**, 6 961 avertissements (sauts indirects). Environ 6 minutes de bout en bout ; une relance sans changement saute tout. Reste à faire : **compiler le runtime et le code généré** et les lier en un exécutable.
 4. **Premier démarrage** : ELF + modules 1 et 2 (socle et titre), IOP avec les IRX d'origine, GS logiciel.
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
