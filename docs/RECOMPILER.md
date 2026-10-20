@@ -122,7 +122,12 @@ Conception :
    - **le jeu démarre** : runtime et fenêtre initialisés, correctif de jeu appliqué (`port/vp2s_overrides.cpp` : image ISO, disposition mémoire), puis le code du jeu s'exécute (démarrage C, constructeurs, initialisation de l'IOP) ;
    - **disposition mémoire** : VP2 utilise presque toute la RAM (tas de `0x549100` à `0x1FF0000`). Le fork permet désormais de déplacer la zone réservée du runtime (`PS2Runtime::configureReservedMemory`, 2 tests) ; VP2 la place dans la mémoire noyau `0x80000`–`0x100000`. Sans ça, `malloc` échouait et le jeu effaçait sa propre mémoire.
 
-   **Blocage actuel** : le jeu attend la réponse de l'IOP dans `sceSifInitCmd` (`0x13a720`, boucle en `0x13a878`). Les fonctions du SDK Sony ne sont pas reliées aux implémentations HLE du runtime, faute de symboles. Prochaine étape : les identifier (base de signatures SDK de `ps2xAnalyzer`, plus Ghidra) et les déclarer dans `stubs` (`nom@0xADRESSE`).
+   - **Fonctions du SDK reliées au runtime** (étape `sdk`) : `ps2xAnalyzer` reconnaît par signature **177 fonctions** (160 dans l'ELF : CD, SIF/RPC, IOP, carte mémoire, DMA, GS, libc ; 17 `libmpeg`/`libipu` dans le module 1). Le fork synthétise désormais l'enveloppe d'une liaison même quand Ghidra n'a pas de fonction à cette adresse (13 cas dans l'ELF ; 1 test).
+   - **Fonctions atteintes uniquement par pointeur** (étape `entries`) : 26 points d'entrée ajoutés (threads, rappels), dont `0x11d460`.
+   - **Rappel CD** : le fork mémorise `sceCdCallback` et le déclenche comme une interruption à la fin de chaque `sceCdRead` (1 test). Sans ça, le thread lecteur du jeu attendait indéfiniment.
+   - Le jeu **lit et déchiffre sa table des fichiers** (LBA 1024, voir audit 7.2) et démarre ses threads, dont l'ouvrier RPC du son (`FUN_001086a0`).
+
+   **Blocage actuel** : les appels `sceSifCallRpc` vers l'IOP (client `0x1d5c44`, probablement le pilote son maison `Csm_`/`Csd_`/`Csi_`) ne reçoivent pas de réponse ; aucun module n'est encore chargé (écran noir). Prochaine étape : diagnostiquer le côté IOP (chargement des IRX, serveurs RPC), avec le panneau de debug du runtime (`PS2X_ENABLE_DEBUG_UI=ON`).
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 

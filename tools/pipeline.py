@@ -4,8 +4,11 @@ Stages, in order (each skips the work whose outputs are newer than its inputs):
   extract  tools/extract.py in Docker                          -> build/extract/
   wrap     main ELF copy + tools/wrap_elf.py per module         -> build/elf/
   ghidra   Ghidra headless analysis + PS2Recomp function export -> build/ghidra/export/
-  tool     PS2Recomp fork recompiler (ps2_recomp) in Docker     -> external/PS2Recomp/out/linux-recomp/
-  recomp   ps2_recomp per input; modules in overlay module mode -> build/recomp/<name>/
+  tool     PS2Recomp fork tools (ps2_recomp, ps2_analyzer)      -> external/PS2Recomp/out/linux-recomp/
+  sdk      ps2_analyzer SDK signature matching per input        -> build/sdk/<name>.toml
+  entries  functions reached only through pointers              -> build/entries/<name>.txt
+  recomp   ps2_recomp per input (Ghidra map + SDK bindings);
+           modules in overlay module mode                       -> build/recomp/<name>/
   report   per-input and total figures                         -> build/report.json, build/report.md
   port     MSVC build of port/ (runtime + generated code)      -> build/port/vp2s.exe
 
@@ -39,6 +42,9 @@ RECOMP_DIR = BUILD / "recomp"
 FORK = ROOT / "external" / "PS2Recomp"
 TOOL_BUILD = FORK / "out" / "linux-recomp"
 TOOL = TOOL_BUILD / "ps2xRecomp" / "ps2_recomp"
+ANALYZER = TOOL_BUILD / "ps2xAnalyzer" / "ps2_analyzer"
+SDK_DIR = BUILD / "sdk"
+ENTRIES_DIR = BUILD / "entries"
 # Optional offline cache of CMake dependency sources (<name>-src directories, e.g. copied
 # from a previous PS2Recomp build's _deps); dependencies are downloaded when absent.
 DEPS_CACHE = BUILD / "deps"
@@ -47,7 +53,7 @@ GHIDRA = Path(os.environ.get("GHIDRA_INSTALL_DIR", r"D:\Tools\ghidra_12.1.4_PUBL
 EE_ZIP = Path(os.environ.get("VP2S_GHIDRA_EE_ZIP", r"D:\Tools\downloads\ghidra-emotionengine-reloaded_12.1.4.zip"))
 GHIDRA_SETTINGS = GHIDRA_DIR / "settings"
 PORT_BUILD = BUILD / "port"
-STAGES = ["extract", "wrap", "ghidra", "tool", "recomp", "report", "port"]
+STAGES = ["extract", "wrap", "ghidra", "tool", "sdk", "entries", "recomp", "report", "port"]
 # Roles of the modules without an original file name, inferred during the audit (docs/AUDIT.md).
 INFERRED_ROLES = {1: "resident core (inferred)", 2: "title / memory card (inferred)", 3: "field engine (inferred)"}
 
@@ -185,8 +191,9 @@ def stage_ghidra(args) -> None:
 
 
 def stage_tool(args) -> None:
-    sources = [p for d in ("ps2xRecomp/src", "ps2xRecomp/include") for p in (FORK / d).rglob("*") if p.is_file()]
-    if not stale([TOOL], sources, args.force):
+    sources = [p for d in ("ps2xRecomp/src", "ps2xRecomp/include", "ps2xAnalyzer/src", "ps2xAnalyzer/include")
+               for p in (FORK / d).rglob("*") if p.is_file()]
+    if not stale([TOOL, ANALYZER], sources, args.force):
         print("  up to date")
         return
     deps = []
@@ -195,9 +202,70 @@ def stage_tool(args) -> None:
                 for src in DEPS_CACHE.glob("*-src")]
     TOOL_BUILD.mkdir(parents=True, exist_ok=True)
     docker("cmake", "-S", cpath(FORK), "-B", cpath(TOOL_BUILD), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
-           "-DPS2X_BUILD_RUNTIME=OFF", "-DPS2X_BUILD_ANALYZER=OFF", "-DPS2X_BUILD_TEST=OFF",
+           "-DPS2X_BUILD_RUNTIME=OFF", "-DPS2X_BUILD_ANALYZER=ON", "-DPS2X_BUILD_TEST=OFF",
            "-DPS2X_BUILD_STUDIO=OFF", *deps, log=TOOL_BUILD / "configure.log")
-    docker("cmake", "--build", cpath(TOOL_BUILD), "--target", "ps2_recomp", log=TOOL_BUILD / "build.log")
+    docker("cmake", "--build", cpath(TOOL_BUILD), "--target", "ps2_recomp", "ps2_analyzer",
+           log=TOOL_BUILD / "build.log")
+
+
+def stage_sdk(args) -> None:
+    """Match Sony SDK functions by signature so they bind to the runtime's HLE handlers."""
+    SDK_DIR.mkdir(parents=True, exist_ok=True)
+    commands = []
+    for name in input_names(args.inputs):
+        elf, out = ELF_DIR / f"{name}.elf", SDK_DIR / f"{name}.toml"
+        if stale([out], [elf, ANALYZER], args.force):
+            commands.append(f"'{cpath(ANALYZER)}' '{cpath(elf)}' '{cpath(out)}' > '{cpath(SDK_DIR / name)}.log' 2>&1")
+    if commands:
+        docker("sh", "-c", " && ".join(commands), log=SDK_DIR / "sdk.log")
+    total = sum(len(sdk_bindings(SDK_DIR / f"{n}.toml")) for n in input_names(args.inputs))
+    print(f"  {len(commands)} input(s) analyzed; {total} SDK bindings in total")
+
+
+def stage_entries(args) -> None:
+    """Functions reached only through pointers become recompiler entry points."""
+    from find_entry_points import Image, find_entry_points
+
+    names = input_names(None)  # main is always needed to attribute cross-references
+    inputs = [ELF_DIR / f"{n}.elf" for n in names] + [EXPORT_DIR / f"{n}_functions.csv" for n in names]
+    outputs = [ENTRIES_DIR / f"{n}.txt" for n in names]
+    inputs.append(ROOT / "tools" / "find_entry_points.py")
+    if not stale(outputs, inputs, args.force):
+        print("  up to date")
+        return
+    ENTRIES_DIR.mkdir(parents=True, exist_ok=True)
+    images = {n: Image(ELF_DIR / f"{n}.elf") for n in names}
+    found = find_entry_points(images, {n: EXPORT_DIR / f"{n}_functions.csv" for n in names})
+    for name in names:
+        # Rewrite only on change so unchanged inputs are not recompiled downstream.
+        path, text = ENTRIES_DIR / f"{name}.txt", "".join(f"0x{a:08x}\n" for a in found[name])
+        if not path.exists() or path.read_text() != text:
+            path.write_text(text)
+        else:
+            path.touch()
+    print(f"  {sum(map(len, found.values()))} entry points ({len(found['main'])} in the main ELF)")
+
+
+def entry_points(name: str) -> list[str]:
+    path = ENTRIES_DIR / f"{name}.txt"
+    return path.read_text().split() if path.exists() else []
+
+
+STUB_ENTRY = re.compile(r'"([^"@]+)@(0x[0-9A-Fa-f]+)"')
+
+
+def stub_block(text: str) -> re.Match | None:
+    return re.search(r"(?ms)^stubs = \[(.*?)^\]", text)
+
+
+def sdk_bindings(path: Path) -> dict[int, str]:
+    """name@address stub bindings of a TOML file, keyed by address."""
+    if not path.exists():
+        return {}
+    block = stub_block(path.read_text())
+    if not block:
+        return {}
+    return {int(addr, 16): name for name, addr in STUB_ENTRY.findall(block.group(1))}
 
 
 def write_config(name: str) -> Path:
@@ -210,6 +278,20 @@ def write_config(name: str) -> Path:
     }
     for key, value in replacements.items():
         text = re.sub(rf'^{key} = .*$', f'{key} = "{value}"', text, count=1, flags=re.M)
+
+    # SDK functions matched by signature win over Ghidra's names at the same address.
+    stubs = sdk_bindings(EXPORT_DIR / f"{name}.toml") | sdk_bindings(SDK_DIR / f"{name}.toml")
+    entries = "".join(f'  "{stubs[a]}@0x{a:08X}",\n' for a in sorted(stubs))
+    block = stub_block(text)
+    if block:
+        text = text[:block.start(1)] + "\n" + entries + text[block.end(1):]
+    elif stubs:
+        text = text.replace("[general]\n", f"[general]\nstubs = [\n{entries}]\n", 1)
+
+    hints = entry_points(name)
+    if hints:
+        listed = "".join(f'  "{h}",\n' for h in hints)
+        text = text.replace("[general]\n", f"[general]\nentry_points = [\n{listed}]\n", 1)
     if name != "main":
         text = text.replace("[general]\n", f'[general]\nmodule_name = "{name}"\n', 1)
     config = RECOMP_DIR / "config" / f"{name}.toml"
@@ -223,7 +305,9 @@ def stage_recomp(args) -> None:
     done = 0
     for name in input_names(args.inputs):
         stamp = RECOMP_DIR / name / ".done"
-        if not stale([stamp], [EXPORT_DIR / f"{name}.toml", EXPORT_DIR / f"{name}_functions.csv", TOOL], args.force):
+        inputs = [EXPORT_DIR / f"{name}.toml", EXPORT_DIR / f"{name}_functions.csv", SDK_DIR / f"{name}.toml",
+                  ENTRIES_DIR / f"{name}.txt", TOOL]
+        if not stale([stamp], inputs, args.force):
             continue
         shutil.rmtree(RECOMP_DIR / name, ignore_errors=True)
         config = write_config(name)

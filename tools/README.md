@@ -15,8 +15,10 @@ python tools/pipeline.py
 | `extract` | `extract.py` dans Docker | `extract/` |
 | `wrap` | copie de l'ELF principal, `wrap_elf.py` pour chaque module | `elf/main.elf`, `elf/modNNN.elf` |
 | `ghidra` | analyse Ghidra headless (processeur `r5900` imposé) et export PS2Recomp, en une session | `ghidra/export/<nom>.toml`, `<nom>_functions.csv` |
-| `tool` | compile `ps2_recomp` depuis le fork (`external/PS2Recomp`) | `external/PS2Recomp/out/linux-recomp/` |
-| `recomp` | `ps2_recomp` sur chaque entrée ; les modules en mode module (`module_name = "modNNN"`) | `recomp/<nom>/`, `recomp/<nom>.log` |
+| `tool` | compile `ps2_recomp` et `ps2_analyzer` depuis le fork (`external/PS2Recomp`) | `external/PS2Recomp/out/linux-recomp/` |
+| `sdk` | `ps2_analyzer` reconnaît les fonctions du SDK Sony par signature, pour les relier aux implémentations C++ du runtime | `sdk/<nom>.toml` |
+| `entries` | `find_entry_points.py` : fonctions atteintes uniquement par pointeur (points d'entrée de threads, rappels, vtables), que Ghidra ne voit pas ; elles deviennent des `entry_points` du recompilateur | `entries/<nom>.txt` |
+| `recomp` | `ps2_recomp` sur chaque entrée, avec la carte Ghidra et les liaisons SDK fusionnées (à adresse égale, le nom SDK l'emporte) ; les modules en mode module (`module_name = "modNNN"`) | `recomp/<nom>/`, `recomp/<nom>.log` |
 | `report` | chiffres par entrée et totaux | `report.md`, `report.json` |
 | `port` | compile `port/` (runtime du fork + code généré) avec MSVC (VS 2022 Build Tools, via `vswhere` ou `VP2S_VS_DIR`) | `port/vp2s.exe` |
 

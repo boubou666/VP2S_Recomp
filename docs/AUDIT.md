@@ -129,7 +129,7 @@ La clé (16 octets, lue par le jeu à `0x1d5930`, en BSS, posée à l'exécution
 
 **Seul le code est chiffré** : les 127 blocs SLE sont tous des modules ou des overlays.
 
-La zone de la LBA 1024 (36 Ko) n'utilise pas ce chiffrement. Sa nature reste inconnue : ce n'est peut-être pas une table des fichiers.
+La zone de la LBA 1024 (36 Ko) n'utilise pas ce chiffrement. *Mise à jour (premier démarrage du portage) : c'est bien la **table des fichiers**, chiffrée autrement.* Au démarrage, `FUN_0011ebc0` la lit (LBA `0x400`, 0x9000 octets) via le gestionnaire CD (`0x1ca440`), puis la déchiffre par XOR avec un flux pseudo-aléatoire de type xorshift, initialisé par la constante `0x49287491`, sur trois bandes de 0x3000 octets. Ce chiffrement reste à réimplémenter pour lire la table hors du jeu.
 
 ### 7.3 Modules et overlays
 

@@ -18,6 +18,11 @@ public class Decompile extends GhidraScript {
             for (int i = 1; i < args.length; i++) {
                 Function f = getFunctionAt(toAddr(args[i]));
                 if (f == null) f = getFunctionContaining(toAddr(args[i]));
+                if (f == null) {
+                    // Routines only reached through pointers may be missing: create them (not saved with -readOnly)
+                    disassemble(toAddr(args[i]));
+                    f = createFunction(toAddr(args[i]), null);
+                }
                 if (f == null) { out.println("// no function at " + args[i]); continue; }
                 DecompileResults r = di.decompileFunction(f, 120, monitor);
                 out.println("// ===== " + f.getEntryPoint() + " " + f.getName());

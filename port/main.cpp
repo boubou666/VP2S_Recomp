@@ -6,6 +6,7 @@
 
 #include "ps2_overlay_modules.h"
 #include "ps2_runtime.h"
+#include "runtime/ee_scheduler.h"
 
 #include "raylib.h"
 
@@ -39,6 +40,45 @@ namespace
         int shot = 0;
     };
 
+    const char *statusName(EeThreadStatus status)
+    {
+        static const char *names[] = {"run", "ready", "wait", "wait+susp", "susp", "dormant"};
+        const auto index = static_cast<size_t>(status);
+        return index < std::size(names) ? names[index] : "?";
+    }
+
+    const char *waitName(EeWaitReason reason)
+    {
+        static const char *names[] = {"-", "sleep", "sema", "evflag", "vsync", "external", "mpeg"};
+        const auto index = static_cast<size_t>(reason);
+        return index < std::size(names) ? names[index] : "?";
+    }
+
+    // Every guest thread with where it stands, and semaphores with waiters.
+    void printScheduler(PS2Runtime &runtime)
+    {
+        const EeKernelSnapshot snap = runtime.eeScheduler().snapshot();
+        for (const EeThreadSnapshot &thread : snap.threads)
+        {
+            std::cout << "[vp2s-diag]   thread " << thread.id << (thread.id == snap.runningThreadId ? "*" : "")
+                      << " " << statusName(thread.status) << "/" << waitName(thread.waitReason);
+            if (thread.waitReason != EeWaitReason::None)
+            {
+                std::cout << "#" << thread.waitId;
+            }
+            std::cout << std::hex << " pc=0x" << thread.pc << " ra=0x" << thread.ra << " entry=0x" << thread.entry
+                      << std::dec << " prio=" << thread.currentPriority << std::endl;
+        }
+        for (const EeSemaphoreSnapshot &sema : snap.semaphores)
+        {
+            if (sema.waiters != 0u)
+            {
+                std::cout << "[vp2s-diag]   sema " << sema.id << " count=" << sema.count << "/" << sema.maxCount
+                          << " waiters=" << sema.waiters << std::endl;
+            }
+        }
+    }
+
     void drawDiagnostics(PS2Runtime &runtime, void *userData)
     {
         auto &diag = *static_cast<Diagnostics *>(userData);
@@ -60,6 +100,19 @@ namespace
         const std::string file = "vp2s_diag_" + std::to_string(diag.shot++) + ".png";
         TakeScreenshot(file.c_str());
         std::cout << " screenshot=" << file << std::endl;
+        printScheduler(runtime);
+
+        // CD manager waited on by FUN_0011ebc0 (pointer in the main thread's s1).
+        const uint32_t manager = static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[17]));
+        if (manager >= 0x100000u && manager + 0x9200u < PS2_RAM_SIZE)
+        {
+            auto u32 = [&](uint32_t off) { uint32_t v; std::memcpy(&v, rdram + manager + off, 4); return v; };
+            std::cout << "[vp2s-diag]   cd manager 0x" << std::hex << manager << std::dec
+                      << " sema+10=" << u32(0x10) << " sema+18=" << u32(0x18) << " sema+28=" << u32(0x28)
+                      << " pending+5c=" << int(rdram[manager + 0x5c]) << " enabled+9181=" << int(rdram[manager + 0x9181])
+                      << " busy+9183=" << int(rdram[manager + 0x9183]) << " lba+17c=0x" << std::hex << u32(0x17c)
+                      << std::dec << std::endl;
+        }
     }
 }
 
