@@ -117,7 +117,12 @@ Conception :
 1. ~~**Fork de PS2Recomp**~~ — fait (sous-module `external/PS2Recomp`).
 2. ~~**Overlays**~~ — fait (voir « Gestion des overlays — implémentée »).
 3. ~~**Pipeline de build**~~ — fait pour la partie recompilation : `tools/pipeline.py` (voir `tools/README.md`). Résultat du 2026-10-20 : **26 entrées sur 26** (ELF + 25 modules), **7 191 fonctions**, **8,69 M lignes de C++** (55 492 fichiers, 338 Mo), **0 erreur**, 6 961 avertissements (sauts indirects). Environ 6 minutes de bout en bout ; une relance sans changement saute tout. Reste à faire : **compiler le runtime et le code généré** et les lier en un exécutable.
-4. **Premier démarrage** : ELF + modules 1 et 2 (socle et titre), IOP avec les IRX d'origine, GS logiciel.
+4. **Premier démarrage** — en cours. Fait au 2026-10-20 :
+   - **`build/port/vp2s.exe` (168 Mo) compilé avec MSVC 14.44** à partir du runtime du fork et des 26 entrées recompilées (`port/CMakeLists.txt`, étape `port` de `tools/pipeline.py`). Unity build par lots de 64 et en-tête précompilé : environ 13 minutes en compilation complète, 0 erreur et 0 avertissement du compilateur ;
+   - **le jeu démarre** : runtime et fenêtre initialisés, correctif de jeu appliqué (`port/vp2s_overrides.cpp` : image ISO, disposition mémoire), puis le code du jeu s'exécute (démarrage C, constructeurs, initialisation de l'IOP) ;
+   - **disposition mémoire** : VP2 utilise presque toute la RAM (tas de `0x549100` à `0x1FF0000`). Le fork permet désormais de déplacer la zone réservée du runtime (`PS2Runtime::configureReservedMemory`, 2 tests) ; VP2 la place dans la mémoire noyau `0x80000`–`0x100000`. Sans ça, `malloc` échouait et le jeu effaçait sa propre mémoire.
+
+   **Blocage actuel** : le jeu attend la réponse de l'IOP dans `sceSifInitCmd` (`0x13a720`, boucle en `0x13a878`). Les fonctions du SDK Sony ne sont pas reliées aux implémentations HLE du runtime, faute de symboles. Prochaine étape : les identifier (base de signatures SDK de `ps2xAnalyzer`, plus Ghidra) et les déclarer dans `stubs` (`nom@0xADRESSE`).
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 

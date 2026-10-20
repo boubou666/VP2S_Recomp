@@ -7,10 +7,12 @@ Stages, in order (each skips the work whose outputs are newer than its inputs):
   tool     PS2Recomp fork recompiler (ps2_recomp) in Docker     -> external/PS2Recomp/out/linux-recomp/
   recomp   ps2_recomp per input; modules in overlay module mode -> build/recomp/<name>/
   report   per-input and total figures                         -> build/report.json, build/report.md
+  port     MSVC build of port/ (runtime + generated code)      -> build/port/vp2s.exe
 
 Usage (Windows, from the project root):
   python tools/pipeline.py [--from STAGE | --only STAGE] [--force] [--inputs main,mod003]
 
+The port stage needs the Visual Studio 2022 C++ build tools (found with vswhere, or VP2S_VS_DIR).
 Requires Docker with the vp2s-toolchain image (toolchain/Dockerfile), Ghidra
 (GHIDRA_INSTALL_DIR, default D:\\Tools\\ghidra_12.1.4_PUBLIC) and the Emotion Engine extension
 zip for that Ghidra version (VP2S_GHIDRA_EE_ZIP, default in D:\\Tools\\downloads).
@@ -44,7 +46,8 @@ IMAGE = "vp2s-toolchain"
 GHIDRA = Path(os.environ.get("GHIDRA_INSTALL_DIR", r"D:\Tools\ghidra_12.1.4_PUBLIC"))
 EE_ZIP = Path(os.environ.get("VP2S_GHIDRA_EE_ZIP", r"D:\Tools\downloads\ghidra-emotionengine-reloaded_12.1.4.zip"))
 GHIDRA_SETTINGS = GHIDRA_DIR / "settings"
-STAGES = ["extract", "wrap", "ghidra", "tool", "recomp", "report"]
+PORT_BUILD = BUILD / "port"
+STAGES = ["extract", "wrap", "ghidra", "tool", "recomp", "report", "port"]
 # Roles of the modules without an original file name, inferred during the audit (docs/AUDIT.md).
 INFERRED_ROLES = {1: "resident core (inferred)", 2: "title / memory card (inferred)", 3: "field engine (inferred)"}
 
@@ -280,6 +283,51 @@ def stage_report(args) -> None:
     (BUILD / "report.md").write_text("\n".join(md) + "\n")
     print(f"  {totals['ok']}/{totals['inputs']} inputs recompiled, {totals['functions']} functions, "
           f"{totals['cpp_lines']:,} lines of C++, {totals['errors']} errors -> build/report.md")
+
+
+def vs_install_dir() -> Path:
+    if os.environ.get("VP2S_VS_DIR"):
+        return Path(os.environ["VP2S_VS_DIR"])
+    vswhere = (Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+               / "Microsoft Visual Studio" / "Installer" / "vswhere.exe")
+    found = subprocess.run([str(vswhere), "-latest", "-products", "*",
+                            "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                            "-property", "installationPath"], capture_output=True, text=True).stdout.strip()
+    if not found:
+        raise SystemExit("Visual Studio 2022 C++ build tools not found (set VP2S_VS_DIR)")
+    return Path(found.splitlines()[0])
+
+
+def run_msvc(commands: list[str], log: Path) -> None:
+    """Run command lines in a cmd session set up by vcvars64, with VS's CMake and Ninja first on PATH."""
+    vs = vs_install_dir()
+    tools = vs / "Common7" / "IDE" / "CommonExtensions" / "Microsoft" / "CMake"
+    script = log.with_suffix(".cmd")
+    lines = ["@echo off",
+             f'call "{vs}\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul || exit /b 1',
+             f'set "PATH={tools}\\CMake\\bin;{tools}\\Ninja;%PATH%"']
+    lines += [f"{command} || exit /b 1" for command in commands]
+    script.write_text("\r\n".join(lines) + "\r\n")
+    with open(log, "w", encoding="utf-8", errors="replace") as out:
+        result = subprocess.run(["cmd", "/c", str(script)], stdout=out, stderr=subprocess.STDOUT)
+    if result.returncode != 0:
+        raise SystemExit(f"MSVC step failed ({result.returncode}) - see {log}")
+
+
+def stage_port(args) -> None:
+    PORT_BUILD.mkdir(parents=True, exist_ok=True)
+    if args.force or not (PORT_BUILD / "CMakeCache.txt").exists():
+        deps = []
+        if DEPS_CACHE.is_dir():
+            deps = [f'"-DFETCHCONTENT_SOURCE_DIR_{src.name[:-4].upper()}={src.as_posix()}"'
+                    for src in DEPS_CACHE.glob("*-src")]
+        print("  configuring (log: build/port/configure.log)")
+        run_msvc([f'cmake -S "{(ROOT / "port").as_posix()}" -B "{PORT_BUILD.as_posix()}" -G Ninja '
+                  f'-DCMAKE_BUILD_TYPE=Release {" ".join(deps)}'], PORT_BUILD / "configure.log")
+    print("  building vp2s.exe (log: build/port/build.log)", flush=True)
+    run_msvc([f'cmake --build "{PORT_BUILD.as_posix()}" --target vp2s'], PORT_BUILD / "build.log")
+    exe = PORT_BUILD / "vp2s.exe"
+    print(f"  {exe.relative_to(ROOT)}: {exe.stat().st_size / 2**20:.1f} MB")
 
 
 # ---------------------------------------------------------------- main

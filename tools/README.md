@@ -18,6 +18,9 @@ python tools/pipeline.py
 | `tool` | compile `ps2_recomp` depuis le fork (`external/PS2Recomp`) | `external/PS2Recomp/out/linux-recomp/` |
 | `recomp` | `ps2_recomp` sur chaque entrée ; les modules en mode module (`module_name = "modNNN"`) | `recomp/<nom>/`, `recomp/<nom>.log` |
 | `report` | chiffres par entrée et totaux | `report.md`, `report.json` |
+| `port` | compile `port/` (runtime du fork + code généré) avec MSVC (VS 2022 Build Tools, via `vswhere` ou `VP2S_VS_DIR`) | `port/vp2s.exe` |
+
+Lancer le jeu : `build\port\vp2s.exe build\extract\iso\SLES_546.45`. L'image ISO est cherchée via `VP2S_ISO`, sinon en remontant depuis le dossier de l'ELF. `VP2S_DIAG=1` affiche toutes les 5 secondes le PC, les modules résidents par emplacement, et enregistre une capture d'écran (`vp2s_diag_N.png`).
 
 Chaque étape saute le travail dont les sorties sont plus récentes que les entrées. Options : `--only <étape>`, `--from <étape>`, `--force`, `--inputs main,mod003`.
 
