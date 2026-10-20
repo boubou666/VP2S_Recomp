@@ -1,0 +1,14 @@
+# Game data: never commit or redistribute
+*.iso
+extracted/
+
+# Ghidra project database
+ghidra/
+
+# Decompiler output and dumps derived from the game
+work/
+out/
+
+# Python
+__pycache__/
+*.pyc
