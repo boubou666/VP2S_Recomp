@@ -22,7 +22,9 @@ python tools/pipeline.py
 | `report` | chiffres par entrée et totaux | `report.md`, `report.json` |
 | `port` | compile `port/` (runtime du fork + code généré) avec MSVC (VS 2022 Build Tools, via `vswhere` ou `VP2S_VS_DIR`) | `port/vp2s.exe` |
 
-Lancer le jeu : `build\port\vp2s.exe build\extract\iso\SLES_546.45`. L'image ISO est cherchée via `VP2S_ISO`, sinon en remontant depuis le dossier de l'ELF. `VP2S_DIAG=1` affiche toutes les 5 secondes le PC, les modules résidents par emplacement, et enregistre une capture d'écran (`vp2s_diag_N.png`).
+Lancer le jeu : `build\port\vp2s.exe build\extract\iso\SLES_546.45`. L'image ISO est cherchée via `VP2S_ISO`, sinon en remontant depuis le dossier de l'ELF. `VP2S_DIAG=1` affiche toutes les 5 secondes le PC, les modules résidents par emplacement, les threads du jeu (état, attente, PC), l'état de l'ouvrier son et, avec le préfixe `[vp2s-iop]`, le côté IOP : modules chargés via SIF, clients et serveurs RPC, état de l'émulateur IOP, derniers appels RPC. Il enregistre aussi une capture d'écran (`vp2s_diag_N.png`). Le débogueur du runtime (ImGui) s'ouvre avec **F1** ; il est compilé par défaut (`-DVP2S_DEBUG_UI=OFF` pour l'enlever).
+
+Les fonctions du SDK que la base de signatures ne reconnaît pas sont liées à la main dans `MANUAL_BINDINGS` (`tools/pipeline.py`), par exemple l'enveloppe `sceSifLoadModuleBuffer` en `0x1400f8`. L'étape `recomp` régénère une entrée dès que sa configuration change.
 
 Chaque étape saute le travail dont les sorties sont plus récentes que les entrées. Options : `--only <étape>`, `--from <étape>`, `--force`, `--inputs main,mod003`.
 

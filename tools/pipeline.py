@@ -268,6 +268,17 @@ def sdk_bindings(path: Path) -> dict[int, str]:
     return {int(addr, 16): name for name, addr in STUB_ENTRY.findall(block.group(1))}
 
 
+# SDK functions the signature base does not match, identified by hand. The runtime's HLE
+# handler named here replaces the recompiled guest code at that address.
+MANUAL_BINDINGS: dict[str, dict[int, str]] = {
+    "main": {
+        # sceSifLoadModuleBuffer(addr, args, argp): calls _sceSifLoadModuleBuffer with a
+        # result slot on its stack. Loads the IRX modules copied to IOP memory at boot.
+        0x001400F8: "sceSifLoadModuleBuffer",
+    },
+}
+
+
 def write_config(name: str) -> Path:
     """Export TOML rewritten with container paths; modules get overlay module mode."""
     text = (EXPORT_DIR / f"{name}.toml").read_text()
@@ -281,6 +292,7 @@ def write_config(name: str) -> Path:
 
     # SDK functions matched by signature win over Ghidra's names at the same address.
     stubs = sdk_bindings(EXPORT_DIR / f"{name}.toml") | sdk_bindings(SDK_DIR / f"{name}.toml")
+    stubs |= MANUAL_BINDINGS.get(name, {})
     entries = "".join(f'  "{stubs[a]}@0x{a:08X}",\n' for a in sorted(stubs))
     block = stub_block(text)
     if block:
@@ -296,7 +308,9 @@ def write_config(name: str) -> Path:
         text = text.replace("[general]\n", f'[general]\nmodule_name = "{name}"\n', 1)
     config = RECOMP_DIR / "config" / f"{name}.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(text)
+    # Rewrite only on change: the config's date tells stage_recomp whether to regenerate.
+    if not config.exists() or config.read_text() != text:
+        config.write_text(text)
     return config
 
 
@@ -305,12 +319,11 @@ def stage_recomp(args) -> None:
     done = 0
     for name in input_names(args.inputs):
         stamp = RECOMP_DIR / name / ".done"
-        inputs = [EXPORT_DIR / f"{name}.toml", EXPORT_DIR / f"{name}_functions.csv", SDK_DIR / f"{name}.toml",
-                  ENTRIES_DIR / f"{name}.txt", TOOL]
+        config = write_config(name)
+        inputs = [config, EXPORT_DIR / f"{name}_functions.csv", TOOL]
         if not stale([stamp], inputs, args.force):
             continue
         shutil.rmtree(RECOMP_DIR / name, ignore_errors=True)
-        config = write_config(name)
         start = time.time()
         docker(cpath(TOOL), cpath(config), log=RECOMP_DIR / f"{name}.log")
         stamp.write_text(f"{time.time() - start:.1f}\n")

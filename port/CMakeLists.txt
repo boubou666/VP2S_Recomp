@@ -21,7 +21,8 @@ set(PS2X_BUILD_STUDIO OFF CACHE BOOL "" FORCE)
 set(PS2X_ENABLE_SCCACHE OFF CACHE BOOL "" FORCE)
 # Defaults for this port; override on the cmake command line when needed.
 set(PS2X_ENABLE_FFMPEG OFF CACHE BOOL "Enable FFmpeg-backed MPEG video decoding")
-set(PS2X_ENABLE_DEBUG_UI OFF CACHE BOOL "Build the desktop runtime debug UI")
+option(VP2S_DEBUG_UI "Show the runtime debugger (ImGui, F1) in vp2s" ON)
+set(PS2X_ENABLE_DEBUG_UI ${VP2S_DEBUG_UI} CACHE BOOL "Build the desktop runtime debug UI" FORCE)
 # Aggressive logs make every generated function log its entry.
 set(PS2X_ENABLE_AGRESSIVE_LOGS OFF CACHE BOOL "Enable very verbose/agressive PS2 runtime logs")
 add_subdirectory("${VP2S_FORK}" ps2recomp EXCLUDE_FROM_ALL)
@@ -49,19 +50,31 @@ if(MSVC)
     set(CMAKE_CXX_FLAGS_RELEASE "${VP2S_GENERATED_OPT} /DNDEBUG")
 endif()
 
-set(VP2S_PORT_SOURCES
+# Port front end (main, game override, diagnostics, optional debugger) in its own object
+# library: its includes, defines and ImGui never reach the generated sources' command line,
+# so toggling them does not rebuild the whole game.
+add_library(vp2s_frontend OBJECT
     "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_overrides.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_iop.cpp"
 )
-add_executable(vp2s ${VP2S_PORT_SOURCES} ${VP2S_GENERATED_SOURCES})
+target_link_libraries(vp2s_frontend PRIVATE ps2_runtime)
+if(VP2S_DEBUG_UI)
+    target_sources(vp2s_frontend PRIVATE "${VP2S_FORK}/ps2xRuntime/src/lib/ps2_debug_panel.cpp")
+    # The debug panel reads kernel HLE state through Kernel/... includes.
+    target_include_directories(vp2s_frontend PRIVATE "${VP2S_FORK}/ps2xRuntime/src/lib")
+    target_link_libraries(vp2s_frontend PRIVATE rlImGui imgui)
+    target_compile_definitions(vp2s_frontend PRIVATE PS2X_ENABLE_DEBUG_UI=1)
+endif()
+
+add_executable(vp2s ${VP2S_GENERATED_SOURCES})
 target_include_directories(vp2s PRIVATE ${VP2S_GENERATED_DIRS})
-target_link_libraries(vp2s PRIVATE ps2_runtime)
+target_link_libraries(vp2s PRIVATE vp2s_frontend ps2_runtime)
 
 set_target_properties(vp2s PROPERTIES
     UNITY_BUILD ON
     UNITY_BUILD_BATCH_SIZE "${VP2S_UNITY_BATCH_SIZE}"
 )
-set_source_files_properties(${VP2S_PORT_SOURCES} PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 
 set(VP2S_RUNTIME_INCLUDE "${VP2S_FORK}/ps2xRuntime/include")
 target_precompile_headers(vp2s PRIVATE
@@ -72,6 +85,7 @@ target_precompile_headers(vp2s PRIVATE
 )
 
 if(MSVC)
+    target_compile_options(vp2s_frontend PRIVATE /FS)
     target_compile_options(vp2s PRIVATE /bigobj /FS)
     # WinAPI vs raylib CloseWindow clash, as for the upstream ps2EntryRunner.
     target_link_options(vp2s PRIVATE /FORCE:MULTIPLE)

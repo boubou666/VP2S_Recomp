@@ -2,11 +2,15 @@
 //
 // Usage: vp2s.exe <path to SLES_546.45> (the boot ELF extracted by tools/pipeline.py).
 // The disc image is found by the game override (vp2s_overrides.cpp, VP2S_ISO).
-// VP2S_DIAG=1 prints the resident overlay modules and saves a screenshot every few seconds.
+// VP2S_DIAG=1 prints the resident overlay modules, guest threads and IOP/RPC state and saves
+// a screenshot every few seconds. Builds with VP2S_DEBUG_UI show the runtime debugger (F1).
 
 #include "ps2_overlay_modules.h"
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
+#if defined(PS2X_ENABLE_DEBUG_UI)
+#include "ps2_debug_panel.h"
+#endif
 
 #include "raylib.h"
 
@@ -16,6 +20,8 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+
+void printIopDiagnostics(PS2Runtime &runtime); // vp2s_diag_iop.cpp
 
 namespace
 {
@@ -36,8 +42,12 @@ namespace
 
     struct Diagnostics
     {
+        bool enabled = false;
         int frame = 0;
         int shot = 0;
+#if defined(PS2X_ENABLE_DEBUG_UI)
+        PS2DebugPanel panel;
+#endif
     };
 
     const char *statusName(EeThreadStatus status)
@@ -82,7 +92,10 @@ namespace
     void drawDiagnostics(PS2Runtime &runtime, void *userData)
     {
         auto &diag = *static_cast<Diagnostics *>(userData);
-        if (++diag.frame % kDiagIntervalFrames != 0)
+#if defined(PS2X_ENABLE_DEBUG_UI)
+        diag.panel.draw(runtime);
+#endif
+        if (!diag.enabled || ++diag.frame % kDiagIntervalFrames != 0)
         {
             return;
         }
@@ -113,6 +126,44 @@ namespace
                       << " busy+9183=" << int(rdram[manager + 0x9183]) << " lba+17c=0x" << std::hex << u32(0x17c)
                       << std::dec << std::endl;
         }
+        // Sound RPC worker object (thread FUN_001086a0): request queue and its semaphore.
+        constexpr uint32_t kSound = 0x001d5990u;
+        {
+            auto u32 = [&](uint32_t off) { uint32_t v; std::memcpy(&v, rdram + kSound + off, 4); return v; };
+            const int semaId = static_cast<int>(u32(0x340));
+            std::cout << "[vp2s-diag]   sound worker read=" << u32(0x18) << " write=" << u32(0x1c)
+                      << " idle+2dc=" << int(rdram[kSound + 0x2dc]) << " sema+340=" << semaId;
+            if (const EeSemaphore *sema = runtime.eeScheduler().semaphore(semaId))
+            {
+                std::cout << " count=" << sema->count << "/" << sema->maxCount << " init=" << sema->initCount;
+            }
+            else
+            {
+                std::cout << " (no such semaphore)";
+            }
+            std::cout << std::endl;
+        }
+        printIopDiagnostics(runtime);
+    }
+
+    void initDiagnostics(PS2Runtime &, void *userData)
+    {
+#if defined(PS2X_ENABLE_DEBUG_UI)
+        auto &panel = static_cast<Diagnostics *>(userData)->panel;
+        panel.initialize();
+        panel.setVisible(false); // F1 shows it; keeps the game screen (and diagnostic screenshots) clear
+#else
+        (void)userData;
+#endif
+    }
+
+    void shutdownDiagnostics(PS2Runtime &, void *userData)
+    {
+#if defined(PS2X_ENABLE_DEBUG_UI)
+        static_cast<Diagnostics *>(userData)->panel.shutdown();
+#else
+        (void)userData;
+#endif
     }
 }
 
@@ -130,11 +181,16 @@ int main(int argc, char *argv[])
 
         Diagnostics diagnostics;
         const char *diag = std::getenv("VP2S_DIAG");
-        if (diag && std::strcmp(diag, "0") != 0)
+        diagnostics.enabled = diag && std::strcmp(diag, "0") != 0;
+#if defined(PS2X_ENABLE_DEBUG_UI)
+        constexpr bool kDebugUi = true;
+#else
+        constexpr bool kDebugUi = false;
+#endif
+        if (diagnostics.enabled || kDebugUi)
         {
             // The init callback must be set before initialize() for the draw callback to run.
-            runtime.setDebugUiCallbacks([](PS2Runtime &, void *) {}, &drawDiagnostics,
-                                        [](PS2Runtime &, void *) {}, &diagnostics);
+            runtime.setDebugUiCallbacks(&initDiagnostics, &drawDiagnostics, &shutdownDiagnostics, &diagnostics);
         }
 
         if (!runtime.initialize("Valkyrie Profile 2: Silmeria | VP2S_Recomp"))

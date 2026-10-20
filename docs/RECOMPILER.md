@@ -127,7 +127,12 @@ Conception :
    - **Rappel CD** : le fork mémorise `sceCdCallback` et le déclenche comme une interruption à la fin de chaque `sceCdRead` (1 test). Sans ça, le thread lecteur du jeu attendait indéfiniment.
    - Le jeu **lit et déchiffre sa table des fichiers** (LBA 1024, voir audit 7.2) et démarre ses threads, dont l'ouvrier RPC du son (`FUN_001086a0`).
 
-   **Blocage actuel** : les appels `sceSifCallRpc` vers l'IOP (client `0x1d5c44`, probablement le pilote son maison `Csm_`/`Csd_`/`Csi_`) ne reçoivent pas de réponse ; aucun module n'est encore chargé (écran noir). Prochaine étape : diagnostiquer le côté IOP (chargement des IRX, serveurs RPC), avec le panneau de debug du runtime (`PS2X_ENABLE_DEBUG_UI=ON`).
+   - **Diagnostic** : `VP2S_DIAG=1` affiche les threads du jeu, l'ouvrier son et le côté IOP (`[vp2s-iop]` : modules SIF, clients et serveurs RPC, émulateur IOP, derniers appels RPC). Le débogueur ImGui du runtime est compilé (`VP2S_DEBUG_UI`, activé par défaut) et s'ouvre avec F1.
+   - **Sémaphore à `max_count = 0`** : le constructeur statique de l'objet son (`0x151a20`) crée sa sémaphore avec `max_count = 0`. Le noyau EE ne valide pas ce champ, mais le runtime refusait la création : `WaitSema(-1)` revenait aussitôt et l'ouvrier son (priorité 42) tournait en boucle, ce qui affamait le thread principal (priorité 45). Le fork accepte désormais `max_count = 0` comme sémaphore sans borne, comme Play! (1 test).
+   - **Chargement des IRX** : le jeu lit 10 modules sur le disque, les copie en mémoire IOP (`sceSifAllocIopHeap` puis DMA SIF) et appelle `sceSifLoadModuleBuffer` (enveloppe en `0x1400f8`, liée à la main dans `MANUAL_BINDINGS` de `tools/pipeline.py`, car la base de signatures ne la reconnaît pas). L'émulateur IOP du runtime ne lisait l'image qu'en mémoire EE. Le fork la lit maintenant en mémoire IOP (`loadModuleBufferFromIop`, 1 test).
+   - Résultat au 2026-10-20 : **les 10 IRX sont chargés et émulés** (15 threads IOP, 6 serveurs RPC, environ 7 M d'instructions IOP). Le **pilote son répond** aux `sceSifCallRpc` (SID `0x1234`), et les serveurs `0x80001300` à `0x8000131f` sont liés. Le jeu entre ensuite dans sa boucle d'images (`0x100800`–`0x10085c` : VSync, mise à jour d'un objet d'état, envoi au GS).
+
+   **Blocage actuel** : écran noir. La boucle d'images tourne, mais aucun overlay n'est chargé (ni titre ni exploration), même après 40 s. Le gestionnaire CD (`0x581220`) reste marqué occupé (`+0x9183 = 1`, LBA 0) : c'est la première piste, à vérifier par la lecture des fichiers suivants (overlay du titre, logos).
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 
