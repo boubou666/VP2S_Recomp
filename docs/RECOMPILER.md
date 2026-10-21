@@ -154,9 +154,21 @@ Conception :
    - **Vidéo d'introduction** : le lecteur du jeu (`FUN_002b94a0`, module cœur) attend 512 Ko de son de la vidéo (`objet+0xc999c`, environ 2,7 s) avant de demander sa première image. L'émulation `libmpeg` du runtime arrêtait de consommer le flux à 8 images d'avance, si bien que le son plafonnait vers 290 Ko et que la lecture CD en flux attendait de la place dans son anneau. La vraie `libmpeg` met en mémoire la vidéo compressée et peut donc démultiplexer des secondes à l'avance. Le fork accepte maintenant 128 images d'avance (environ 150 Mo en 640×448).
    - Résultat au 2026-10-21 : **la vidéo d'introduction se joue**, en 640×448 au format cinéma, avec le logo SQUARE ENIX, le logo tri-Ace puis la cinématique d'ouverture sous-titrée en français.
 
-   **Points ouverts** : environ 10 images par seconde servies (926 en 90 s), alors que la vidéo est probablement prévue pour 30 : lecture trop lente, à vérifier (cadence `sceMpegGetPicture` ou performance). Le son de la vidéo n'est pas vérifié. L'écran titre après la vidéo n'est pas encore atteint dans les essais.
+   - **Vitesse** : la vidéo est cadencée sur les VSync, et le runtime n'émet une VSync que lorsque le temps réel **et** les cycles EE comptés sont écoulés. Or plusieurs travaux de l'hôte prenaient du temps réel sans compter de cycles : rasterisation GS logicielle, décodage FFmpeg, ordonnanceur IOP appelé tous les 32 cycles. Le profileur `VP2S_PROFILE` (voir `tools/README.md`) a guidé ces corrections dans le fork :
+     - lectures de timer en attente active : un tick de cycles est crédité ;
+     - temps de décodage FFmpeg crédité en cycles EE, puisqu'il remplace l'IPU qui tourne en parallèle de l'EE ;
+     - IOP exécuté par lots de 256 cycles, au lieu d'un passage à chaque point de contrôle : c'était un tiers du temps du thread EE ;
+     - filtrage bilinéaire du GS en entier (les appels CRT d'arrondi dominaient), avec un raccourci quand le texel est aligné ;
+     - cache de texture du GS sur 8 pages au lieu d'une : il recopiait 8 Ko par texel dès qu'une primitive chevauchait deux pages ;
+     - **50 Hz en PAL** : le jeu appelle `sceGsResetGraph(0, 1, 3, 1)`, soit le mode PAL. Le runtime cadençait tout en NTSC 59,94 Hz. Les VBlank, l'IOP, l'horloge des vidéos et le débit du flux CD suivent maintenant `EeScheduler::fieldRate()`.
+   - Résultat au 2026-10-21 : vidéo à environ 24 images/s pour 25 (environ 48 VSync/s pour 50), soit environ 96 % de la vitesse réelle, contre environ 11 images/s auparavant. La cinématique dure plus de 4 minutes. **Start** (Entrée) la passe.
 
-   Clavier (sans manette branchée) : flèches ou WASD = croix directionnelle, X ou Espace = ✕, C = ○, Z = □, V = △, Q/E = L1/R1, Maj gauche/droite = L2/R2, Entrée = Start, Tab = Select.
+   **Points ouverts** :
+   - **Pas de son** : le SPU2 n'est pas émulé.
+   - **Après la vidéo** : un écran blanc puis vert avec une plume (début probable de l'écran titre), mais à environ 1,4 VSync/s. Le jeu y dessine environ 160 triangles texturés par VSync, qui couvrent environ 5,5 millions de pixels (environ 19 écrans de couches translucides), via VU1. Le rasteriseur GS logiciel mono-thread du runtime (environ 100 ns par pixel) ne suit pas ce débit de remplissage : il faut un rendu GS bien plus rapide (GPU, ou logiciel multi-thread vectorisé) pour atteindre l'écran titre à vitesse normale.
+   - Le menu « Choisir format écran » tourne à environ 20 VSync/s (environ 1 million de pixels de sprites par VSync), pour la même raison.
+
+   Clavier (sans manette branchée), touches repérées par leur **position sur un clavier QWERTY** (sur AZERTY, □ est donc la touche W) : flèches = croix directionnelle, WASD = stick gauche, Z = □, X = ✕, C = ○, V = △, Q/E = L1/R1, 1/3 = L2/R2, Ctrl gauche/droit = L3/R3, Entrée = Start, Maj droite = Select.
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 

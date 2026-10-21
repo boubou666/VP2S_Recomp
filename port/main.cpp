@@ -15,6 +15,8 @@
 
 #include "raylib.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -25,6 +27,7 @@
 
 void printIopDiagnostics(PS2Runtime &runtime); // vp2s_diag_iop.cpp
 void printGsDiagnostics(PS2Runtime &runtime);  // vp2s_diag_gs.cpp
+void startProfiler();                          // vp2s_profile.cpp
 
 namespace
 {
@@ -49,6 +52,7 @@ namespace
         int frame = 0;
         int shot = 0;
         int manualShot = 0;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 #if defined(PS2X_ENABLE_DEBUG_UI)
         PS2DebugPanel panel;
 #endif
@@ -131,7 +135,10 @@ namespace
         }
         const uint8_t *rdram = runtime.memory().getRDRAM();
         const R5900Context &cpu = runtime.cpu();
-        std::cout << "[vp2s-diag] frame " << diag.frame << std::hex << ": pc=0x" << cpu.pc
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - diag.start).count();
+        const uint64_t vsyncs = runtime.eeScheduler().currentVSyncTick();
+        std::cout << "[vp2s-diag] frame " << diag.frame << " t=" << static_cast<int>(seconds) << "s vsync=" << vsyncs
+                  << " (" << static_cast<int>(vsyncs / std::max(seconds, 1.0)) << "/s)" << std::hex << ": pc=0x" << cpu.pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[31]))
                   << " sp=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[29])) << std::dec;
         for (const Slot &slot : kSlots)
@@ -334,6 +341,7 @@ int main(int argc, char *argv[])
             std::cerr << "Failed to load ELF file: " << elf.string() << std::endl;
             return 1;
         }
+        startProfiler();
         runtime.run();
         std::cout.flush();
         std::cerr.flush();

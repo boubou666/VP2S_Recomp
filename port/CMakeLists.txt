@@ -60,6 +60,7 @@ add_library(vp2s_frontend OBJECT
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_overrides.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_iop.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_gs.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
 )
 target_link_libraries(vp2s_frontend PRIVATE ps2_runtime)
 if(VP2S_DEBUG_UI)
@@ -74,6 +75,11 @@ add_executable(vp2s ${VP2S_GENERATED_SOURCES})
 target_include_directories(vp2s PRIVATE ${VP2S_GENERATED_DIRS})
 target_link_libraries(vp2s PRIVATE vp2s_frontend ps2_runtime)
 ps2x_stage_ffmpeg_runtime_dlls(vp2s) # no-op without FFmpeg
+if(MSVC)
+    # Public symbols in vp2s.pdb (no /Zi needed) for the VP2S_PROFILE sampler: only relinks.
+    target_link_options(vp2s PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO)
+    target_link_libraries(vp2s PRIVATE dbghelp winmm)
+endif()
 
 # Unity groups by input and guest address range (generated file names end with _0x<address>):
 # adding or removing a function only changes the translation unit of its range. Positional
