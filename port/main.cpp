@@ -143,6 +143,23 @@ namespace
                   << " (" << static_cast<int>(vsyncs / std::max(seconds, 1.0)) << "/s)" << std::hex << ": pc=0x" << cpu.pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[31]))
                   << " sp=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[29])) << std::dec;
+        if (cpu.pc == 0u)
+        {
+            // The main thread jumped to 0: show the object of the failed virtual call ($s1/$a0,
+            // vtable at +0) and what was loaded around it.
+            auto reg = [&](int index) { return static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[index])); };
+            auto word = [&](uint32_t address) { uint32_t value = 0; std::memcpy(&value, rdram + (address & PS2_RAM_MASK), 4); return value; };
+            std::cout << std::hex << " [null call: a0=0x" << reg(4) << " s0=0x" << reg(16) << " s1=0x" << reg(17) << " t9=0x" << reg(25);
+            const uint32_t object = reg(17);
+            std::cout << " obj:";
+            for (uint32_t i = 0; i < 8u; ++i)
+                std::cout << " " << word(object + i * 4u);
+            const uint32_t vtable = word(object);
+            std::cout << " vtable 0x" << vtable << ":";
+            for (uint32_t i = 0; i < 28u; ++i)
+                std::cout << " " << word(vtable + i * 4u);
+            std::cout << "]" << std::dec;
+        }
         for (const Slot &slot : kSlots)
         {
             // Module code starts 0x80 bytes after its in-memory header.
