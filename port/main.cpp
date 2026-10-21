@@ -3,7 +3,8 @@
 // Usage: vp2s.exe <path to SLES_546.45> (the boot ELF extracted by tools/pipeline.py).
 // The disc image is found by the game override (vp2s_overrides.cpp, VP2S_ISO).
 // VP2S_DIAG=1 prints the resident overlay modules, guest threads, IOP/RPC and GS state and saves
-// a screenshot every few seconds. Builds with VP2S_DEBUG_UI show the runtime debugger (F1).
+// a screenshot of the game screen every few seconds; F9 saves one at any time. Builds with
+// VP2S_DEBUG_UI show the runtime debugger (F1).
 
 #include "ps2_overlay_modules.h"
 #include "ps2_runtime.h"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
 void printIopDiagnostics(PS2Runtime &runtime); // vp2s_diag_iop.cpp
 void printGsDiagnostics(PS2Runtime &runtime);  // vp2s_diag_gs.cpp
@@ -46,6 +48,7 @@ namespace
         bool enabled = false;
         int frame = 0;
         int shot = 0;
+        int manualShot = 0;
 #if defined(PS2X_ENABLE_DEBUG_UI)
         PS2DebugPanel panel;
 #endif
@@ -90,12 +93,38 @@ namespace
         }
     }
 
+    // Saves the last frame the runtime's GS presented (what the window shows, without the
+    // debugger overlay), whatever the window state.
+    bool saveGameFrame(PS2Runtime &runtime, const std::string &file)
+    {
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        if (!runtime.gs().copyLatchedHostPresentationFrame(pixels, width, height) ||
+            pixels.size() < static_cast<size_t>(width) * height * 4u)
+        {
+            return false;
+        }
+        Image image{};
+        image.data = pixels.data();
+        image.width = static_cast<int>(width);
+        image.height = static_cast<int>(height);
+        image.mipmaps = 1;
+        image.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+        return ExportImage(image, file.c_str());
+    }
+
     void drawDiagnostics(PS2Runtime &runtime, void *userData)
     {
         auto &diag = *static_cast<Diagnostics *>(userData);
 #if defined(PS2X_ENABLE_DEBUG_UI)
         diag.panel.draw(runtime);
 #endif
+        if (IsKeyPressed(KEY_F9)) // F9: save the game screen (F12 is raylib's window capture)
+        {
+            const std::string file = "vp2s_shot_" + std::to_string(diag.manualShot++) + ".png";
+            std::cout << "[vp2s] " << (saveGameFrame(runtime, file) ? "saved " : "no frame for ") << file << std::endl;
+        }
         if (!diag.enabled || ++diag.frame % kDiagIntervalFrames != 0)
         {
             return;
@@ -112,8 +141,7 @@ namespace
             std::cout << " " << slot.role << "=" << (module ? module->name : "-");
         }
         const std::string file = "vp2s_diag_" + std::to_string(diag.shot++) + ".png";
-        TakeScreenshot(file.c_str());
-        std::cout << " screenshot=" << file << std::endl;
+        std::cout << " screenshot=" << (saveGameFrame(runtime, file) ? file : std::string("-")) << std::endl;
         printScheduler(runtime);
 
         // CD manager (global 0x1c8c80 + 0x17c0, see FUN_00101050). FUN_0011dfe0 starts a read:
