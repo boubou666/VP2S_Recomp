@@ -318,9 +318,11 @@ int main(int argc, char *argv[])
     {
         const std::filesystem::path elf = argv[1];
         // The GS rasterizes on worker threads (VP2's title scene overdraws ~19 screens per
-        // frame); nothing here reads VRAM behind the backend's back.
+        // frame); nothing here reads VRAM behind the backend's back. VP2S_GS_SYNC=1 draws
+        // immediately instead, to compare.
 #if defined(VP2S_GS_ASYNC)
-        GSCpuBackend::SetAsyncRasterization(true);
+        const char *gsSync = std::getenv("VP2S_GS_SYNC");
+        GSCpuBackend::SetAsyncRasterization(!gsSync || std::strcmp(gsSync, "0") == 0);
 #endif
         PS2Runtime runtime;
 
