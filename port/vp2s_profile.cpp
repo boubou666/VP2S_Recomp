@@ -176,6 +176,22 @@ namespace
         std::cout << "[vp2s-prof] busiest thread " << busiest << " (" << samples.busy << " samples)" << std::endl;
         printTop("exclusive", exclusive, samples.busy);
         printTop("inclusive", inclusive, samples.busy);
+
+        // Other threads busy over 30% of the time (e.g. GS raster workers): their top functions.
+        for (auto &[id, other] : threads)
+        {
+            if (id == busiest || other.busy * 10u < other.total * 3u)
+                continue;
+            std::unordered_map<std::string, uint64_t> top;
+            for (const auto &[address, count] : other.leaf)
+                top[symbolOf(address)] += count;
+            std::vector<std::pair<std::string, uint64_t>> sorted(top.begin(), top.end());
+            std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+            std::cout << "[vp2s-prof] thread " << id << " (" << other.busy << "/" << other.total << "):";
+            for (size_t i = 0; i < sorted.size() && i < 8; ++i)
+                std::cout << " " << (sorted[i].second * 1000 / std::max<uint64_t>(other.busy, 1)) / 10.0 << "% " << sorted[i].first << ";";
+            std::cout << std::endl;
+        }
     }
 
     void samplerMain(unsigned intervalSeconds)

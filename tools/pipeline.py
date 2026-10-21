@@ -43,9 +43,11 @@ EXPORT_DIR = GHIDRA_DIR / "export"
 RECOMP_DIR = BUILD / "recomp"
 # ps2_recomp writes here first; only changed files are then copied to RECOMP_DIR.
 STAGING_DIR = BUILD / "recomp-staging"
-FORK = ROOT / "external" / "PS2Recomp"
+# VP2S_FORK / VP2S_TEST_BUILD / VP2S_PORT_BUILD build another fork checkout (e.g. a git
+# worktree) into its own build directories, without touching the default ones.
+FORK = Path(os.environ.get("VP2S_FORK", ROOT / "external" / "PS2Recomp"))
 # The fork tools and its test suites share one MSVC build of the fork.
-TEST_BUILD = BUILD / "tests"
+TEST_BUILD = BUILD / os.environ.get("VP2S_TEST_BUILD", "tests")
 TOOL = TEST_BUILD / "ps2xRecomp" / "ps2_recomp.exe"
 ANALYZER = TEST_BUILD / "ps2xAnalyzer" / "ps2_analyzer.exe"
 SDK_DIR = BUILD / "sdk"
@@ -56,7 +58,7 @@ DEPS_CACHE = BUILD / "deps"
 GHIDRA = Path(os.environ.get("GHIDRA_INSTALL_DIR", r"D:\Tools\ghidra_12.1.4_PUBLIC"))
 EE_ZIP = Path(os.environ.get("VP2S_GHIDRA_EE_ZIP", r"D:\Tools\downloads\ghidra-emotionengine-reloaded_12.1.4.zip"))
 GHIDRA_SETTINGS = GHIDRA_DIR / "settings"
-PORT_BUILD = BUILD / "port"
+PORT_BUILD = BUILD / os.environ.get("VP2S_PORT_BUILD", "port")
 STAGES = ["extract", "wrap", "ghidra", "tool", "sdk", "entries", "recomp", "report", "port", "test"]
 # Roles of the modules without an original file name, inferred during the audit (docs/AUDIT.md).
 INFERRED_ROLES = {1: "resident core (inferred)", 2: "title / memory card (inferred)", 3: "field engine (inferred)"}
@@ -461,17 +463,21 @@ def deps_args() -> str:
 def stage_port(args) -> None:
     PORT_BUILD.mkdir(parents=True, exist_ok=True)
     if args.force or not (PORT_BUILD / "CMakeCache.txt").exists():
-        print("  configuring (log: build/port/configure.log)")
+        print(f"  configuring (log: {(PORT_BUILD / 'configure.log').relative_to(ROOT)})")
+        # Reuse an FFmpeg archive another port build already downloaded.
+        archives = sorted(BUILD.glob("*/ThirdParty/ffmpeg-prefix/src/ffmpeg-*.zip"))
+        ffmpeg = f'"-DFFMPEG_PREBUILT_URL={archives[0].as_posix()}" ' if archives else ""
         run_msvc([f'cmake -S "{(ROOT / "port").as_posix()}" -B "{PORT_BUILD.as_posix()}" -G Ninja '
-                  f'-DCMAKE_BUILD_TYPE=Release {deps_args()}'], PORT_BUILD / "configure.log")
-    print("  building vp2s.exe (log: build/port/build.log)", flush=True)
+                  f'-DCMAKE_BUILD_TYPE=Release "-DVP2S_FORK={FORK.as_posix()}" {ffmpeg}{deps_args()}'], PORT_BUILD / "configure.log")
+    print(f"  building vp2s.exe (log: {(PORT_BUILD / 'build.log').relative_to(ROOT)})", flush=True)
     run_msvc([f'cmake --build "{PORT_BUILD.as_posix()}" --target vp2s'], PORT_BUILD / "build.log")
     exe = PORT_BUILD / "vp2s.exe"
     print(f"  {exe.relative_to(ROOT)}: {exe.stat().st_size / 2**20:.1f} MB")
 
 
 TEST_TARGETS = ["ps2x_tests", "ps2_iop_emulator_tests", "ps2_iop_import_tests",
-                "ps2_iop_compatibility_tests", "ps2_iop_import_version_tests", "ps2_iop_sio2_tests"]
+                "ps2_iop_compatibility_tests", "ps2_iop_import_version_tests", "ps2_iop_sio2_tests",
+                "ps2_iop_spu2_tests"]
 
 
 def configure_fork_build(force: bool) -> None:
@@ -489,9 +495,12 @@ def stage_test(args) -> None:
     """Build the fork's test suites with MSVC and run them."""
     configure_fork_build(args.force)
     print("  building (log: build/tests/build.log)", flush=True)
-    run_msvc([f'cmake --build "{TEST_BUILD.as_posix()}" --target {" ".join(TEST_TARGETS)}'], TEST_BUILD / "build.log")
+    # A fork checkout (worktree) may predate some suites: only build the ones it defines.
+    cmake_text = "".join(f.read_text(errors="replace") for f in FORK.glob("*/CMakeLists.txt"))
+    targets = [t for t in TEST_TARGETS if t in cmake_text]
+    run_msvc([f'cmake --build "{TEST_BUILD.as_posix()}" --target {" ".join(targets)}'], TEST_BUILD / "build.log")
     failed = []
-    for target in TEST_TARGETS:
+    for target in targets:
         exe = next(TEST_BUILD.rglob(f"{target}.exe"))
         log = TEST_BUILD / f"{target}.log"
         with open(log, "w", encoding="utf-8", errors="replace") as out:

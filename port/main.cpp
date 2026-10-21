@@ -15,6 +15,8 @@
 
 #include "raylib.h"
 
+#include "runtime/gs/gs_cpu_backend.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -315,6 +317,11 @@ int main(int argc, char *argv[])
     try
     {
         const std::filesystem::path elf = argv[1];
+        // The GS rasterizes on worker threads (VP2's title scene overdraws ~19 screens per
+        // frame); nothing here reads VRAM behind the backend's back.
+#if defined(VP2S_GS_ASYNC)
+        GSCpuBackend::SetAsyncRasterization(true);
+#endif
         PS2Runtime runtime;
 
         Diagnostics diagnostics;

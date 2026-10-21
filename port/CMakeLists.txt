@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VP2S_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
-set(VP2S_FORK "${VP2S_ROOT}/external/PS2Recomp")
+set(VP2S_FORK "${VP2S_ROOT}/external/PS2Recomp" CACHE PATH "PS2Recomp fork checkout to build against")
 set(VP2S_RECOMP_DIR "${VP2S_ROOT}/build/recomp" CACHE PATH "Recompiled C++ (tools/pipeline.py output)")
 set(VP2S_GENERATED_OPT "/O2 /Ob1" CACHE STRING "MSVC optimization flags for the generated code (Release)")
 
@@ -63,6 +63,11 @@ add_library(vp2s_frontend OBJECT
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
 )
 target_link_libraries(vp2s_frontend PRIVATE ps2_runtime)
+# Asynchronous GS rasterization, when the fork checkout provides it.
+file(STRINGS "${VP2S_FORK}/ps2xRuntime/include/runtime/gs/gs_cpu_backend.h" VP2S_GS_ASYNC_DECL REGEX "SetAsyncRasterization")
+if(VP2S_GS_ASYNC_DECL)
+    target_compile_definitions(vp2s_frontend PRIVATE VP2S_GS_ASYNC=1)
+endif()
 if(VP2S_DEBUG_UI)
     target_sources(vp2s_frontend PRIVATE "${VP2S_FORK}/ps2xRuntime/src/lib/ps2_debug_panel.cpp")
     # The debug panel reads kernel HLE state through Kernel/... includes.
