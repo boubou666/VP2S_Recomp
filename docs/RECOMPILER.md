@@ -173,14 +173,18 @@ Conception :
    - **Fin de vidéo** : `sceMpegIsEnd` attendait la fin du flux CD du runtime, que VP2 ne produit jamais (il lit la vidéo avec ses propres `sceCdRead`) : le lecteur restait sur un écran noir après la dernière image. Sans flux du runtime, la fin du flux MPEG suffit maintenant.
    - **Son** (commit `e0bc8f0` du fork) : SPU2 émulé côté IOP (deux cœurs, 48 voix ADPCM avec enveloppes ADSR, AutoDMA, réverbération, DMA 4/7) ; les gestionnaires VBlank IOP sont délivrés (le pilote son de VP2 réveille ainsi son thread de flux) ; les rappels `sceMpegStrDATA` reçoivent le son de la vidéo. La sortie passe par un étirement temporel WSOLA (hauteur conservée) qui absorbe les écarts de vitesse ; `PS2X_SPU2_WAV=<fichier>` enregistre la sortie.
    - Résultat au 2026-10-21 : menu et vidéo à 50 VSync/s (cible PAL), avec le son. La vidéo va jusqu'au bout (5 547 images) ou se passe avec **Start**, puis le jeu enchaîne sur une scène animée (fond vert, plume, formes bleues) qui tourne à environ 10 à 13 VSync/s. Après environ 70 s de temps de jeu dans cette scène, l'écran « Press Start » n'est pas encore apparu.
+   - **Géométrie VU1 de l'écran titre** : cette « scène animée » était en fait l'écran titre, dont toute la géométrie VU1 (ciel, logo, menu) était fausse. Une trace des microprogrammes VU1 (données VIF en entrée, instructions, paquets XGKICK) a remonté la chaîne :
+     - le programme 0x6e0 appelle son chargeur par `IADDIU vi1, vi0, 1301` puis `JALR vi15, vi1`. L'interpréteur appliquait à `JR`/`JALR` la règle des branches conditionnelles, qui lisent l'ancienne valeur d'un VI écrit par l'instruction précédente. Il sautait donc à l'ancienne valeur de vi1, et le programme partait dans une boucle sans fin. PCSX2 (microVU) n'applique ce retard qu'aux branches conditionnelles. `JR`/`JALR` lisent maintenant la nouvelle valeur ;
+     - le runtime coupait chaque microprogramme à 65 536 cycles. Le programme égaré était donc abandonné en plein milieu, avec la mémoire VU à moitié écrite (adresses des tampons de sortie, constantes de la caméra), et le programme suivant (0x880) écrivait ses sommets par-dessus les matrices. Sur la console, `MSCAL`/`MSCNT` attend la fin du programme : le plafond passe à 2^24 cycles, avec un avertissement si un programme l'atteint ;
+     - un GIFtag `FLG=3` (« disable ») se comporte comme IMAGE sur le GS. XGKICK l'arrêtait comme une instruction réservée, et le GS l'ignorait sans avancer dans le paquet : les deux le traitent maintenant comme IMAGE.
+   - Résultat au 2026-10-21 : **l'écran titre s'affiche correctement** (ciel, logo de la valkyrie, NOUVELLE PARTIE / CHARGER PARTIE / OPTIONS, copyright), à environ 23 à 30 VSync/s sur 50.
 
    **Points ouverts** :
-   - **Vitesse de la scène d'après-vidéo** (environ 10 VSync/s sur 50) : le thread du jeu passe environ 85 % de son temps dans l'interpréteur VU1, et les 8 threads de dessin sont occupés à environ 80 %. Il faudrait un recompilateur VU1 et un rendu GS sur GPU (ou vectorisé) pour atteindre la pleine vitesse ; le son saccade tant que le jeu tourne nettement sous le temps réel.
-   - **Plume en rectangle opaque** : dans un essai où la vidéo est passée avec Start, la plume apparaît comme un rectangle plein (vert puis bleu) au lieu de sa forme. À comparer avec `VP2S_GS_SYNC=1` pour savoir s'il s'agit d'un défaut du dessin asynchrone ou d'une étape de l'animation.
+   - **Vitesse de l'écran titre** (environ 23 à 30 VSync/s sur 50) : il faudrait un recompilateur VU1 et un rendu GS sur GPU (ou vectorisé) pour atteindre la pleine vitesse ; le son saccade tant que le jeu tourne nettement sous le temps réel.
    - Les captures (`vp2s_diag_N.png`) ne font que 640×256 dans cette scène : à vérifier si elles montrent bien tout l'écran.
 
    Clavier (sans manette branchée), touches repérées par leur **position sur un clavier QWERTY** (sur AZERTY, □ est donc la touche W) : flèches = croix directionnelle, WASD = stick gauche, Z = □, X = ✕, C = ○, V = △, Q/E = L1/R1, 1/3 = L2/R2, Ctrl gauche/droit = L3/R3, Entrée = Start, Maj droite = Select.
-5. **Jalon : l'écran titre.**
+5. **Jalon : l'écran titre.** Atteint le 2026-10-21 (rendu correct, pas encore à pleine vitesse).
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 
 ## Reproduire les tests
