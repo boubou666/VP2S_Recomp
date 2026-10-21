@@ -132,13 +132,32 @@ Conception :
    - **Chargement des IRX** : le jeu lit 10 modules sur le disque, les copie en mémoire IOP (`sceSifAllocIopHeap` puis DMA SIF) et appelle `sceSifLoadModuleBuffer` (enveloppe en `0x1400f8`, liée à la main dans `MANUAL_BINDINGS` de `tools/pipeline.py`, car la base de signatures ne la reconnaît pas). L'émulateur IOP du runtime ne lisait l'image qu'en mémoire EE. Le fork la lit maintenant en mémoire IOP (`loadModuleBufferFromIop`, 1 test).
    - Résultat au 2026-10-20 : **les 10 IRX sont chargés et émulés** (15 threads IOP, 6 serveurs RPC, environ 7 M d'instructions IOP). Le **pilote son répond** aux `sceSifCallRpc` (SID `0x1234`), et les serveurs `0x80001300` à `0x8000131f` sont liés. Le jeu entre ensuite dans sa boucle d'images (`0x100800`–`0x10085c` : VSync, mise à jour d'un objet d'état, envoi au GS).
 
-   **Blocage actuel** : écran noir. La boucle d'images tourne, mais aucun overlay n'est chargé (ni titre ni exploration), même après 40 s. Le gestionnaire CD (`0x581220`) reste marqué occupé (`+0x9183 = 1`, LBA 0) : c'est la première piste, à vérifier par la lecture des fichiers suivants (overlay du titre, logos).
+   - **Pilote son et tas IOP** : l'init du pilote son (`Csi_`, RPC n° 1) alloue 764 Ko en mémoire IOP. Le tas de l'émulateur ne réutilisait jamais un bloc libéré et ne couvrait que 896 Ko, si bien que l'init échouait. `Csd_` n'installait alors pas ses gestionnaires de commandes SIF, et le transfert de la banque son (état de démarrage 6) attendait sans fin. Le fork alloue désormais comme `sysmem` (*first-fit* dans un pool unique au-dessus des modules) et transmet les commandes SIF de l'EE vers l'IOP (`sceSifSendCmd`, avec les arguments 5 et 6 dans `t0`/`t1` selon l'EABI). 1 test pour chaque point.
+   - **Clé de déchiffrement des overlays** : les fichiers `SLE` sont déchiffrés avec une clé que le jeu calcule sur VU0 (microprogramme chargé depuis `0x145d00`), à partir de 4 mots renvoyés par le pilote son (commande n° 14 de `Csi_`, le complément de constantes de son `.data`). L'addition du FMAC PS2 perd les bits du petit opérande avant d'additionner. Une addition IEEE, même arrondie vers zéro, donnait (clé) au lieu de (clé), et l'overlay du titre sortait en charabia. Le fork modélise maintenant cette addition (PCSX2 code ces 4 cas en dur sous le nom « TriAce hack »). 1 test, qui exécute le microprogramme réel.
+   - **Code que Ghidra ne voit pas** (`wrap_elf.py`, `find_entry_points.py`, recompilateur) :
+     - initialiseurs statiques CodeWarrior placés en fin de `.data`, avant la table de constructeurs de l'en-tête (`+0x18`…`+0x1c`) : section exécutable `.init` ;
+     - fonctions à cheval sur la fin de `.text` déclarée (modules 2, 16, 19 et 22) ;
+     - fonctions atteintes par pointeur d'un fichier à l'autre (vtables de l'ELF principal vers le module cœur), par `jal` d'un overlay vers l'ELF principal ou vers un autre module, et leurs appels de proche en proche ;
+     - fonctions alignées derrière du remplissage, après un `jr ra`, un `j` ou un `b`.
+     Au total, environ 4 200 points d'entrée.
+   - **Pipeline natif** : plus de Docker. Extraction et enveloppes ELF en Python, outils du fork et tests compilés avec MSVC (étapes `tool` et `test`).
+   - **Recompilations incrémentales** : l'étape `recomp` ne remplace que les fichiers dont le contenu change. Le unity build est groupé par entrée et par tranche de 8 Ko d'adresses (`UNITY_BUILD_MODE GROUP`) au lieu de lots positionnels, qu'un seul fichier ajouté décalait tous. Une régénération touchant quelques fonctions se recompile en 2 à 5 minutes au lieu de 13.
+
+   État au 2026-10-21 : la clé est juste, et les overlays **cœur (module 1) et titre (module 2) sont chargés, résidents, constructeurs exécutés**. Le jeu tourne dans leur code sans plantage pendant au moins une minute.
+
+   **Blocage actuel** : écran toujours noir. Il reste à voir si le jeu attend quelque chose (CD, son, VSync, carte mémoire) ou s'il dessine sans que l'image n'arrive à l'écran (chemin GS du runtime).
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 
 ## Reproduire les tests
 
-Suite de tests du fork (recompilateur `ps2_recomp` compris). La compilation demande `-march=x86-64-v2` sous g++ ; le montage `/deps` est facultatif et réutilise des sources de dépendances déjà téléchargées :
+Suites de tests du fork (`ps2x_tests`, recompilateur compris, et les 4 suites IOP), compilées avec MSVC :
+
+```bash
+python tools/pipeline.py --only test
+```
+
+Sous Linux (Docker, facultatif), la compilation demande `-march=x86-64-v2` sous g++ ; le montage `/deps` est facultatif et réutilise des sources de dépendances déjà téléchargées :
 
 ```bash
 docker run --rm -v D:\VP2S_Recomp\external\PS2Recomp:/src -v D:\VP2S_Recomp:/work vp2s-toolchain sh /work/scripts/build_ps2recomp_tests.sh linux-tests

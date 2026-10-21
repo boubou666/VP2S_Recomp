@@ -115,16 +115,61 @@ namespace
         std::cout << " screenshot=" << file << std::endl;
         printScheduler(runtime);
 
-        // CD manager waited on by FUN_0011ebc0 (pointer in the main thread's s1).
-        const uint32_t manager = static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[17]));
-        if (manager >= 0x100000u && manager + 0x9200u < PS2_RAM_SIZE)
+        // CD manager (global 0x1c8c80 + 0x17c0, see FUN_00101050). FUN_0011dfe0 starts a read:
+        // busy+9183=1, pending+5c=1, then signals the CD thread through the semaphore at +0x10.
+        constexpr uint32_t kCdManager = 0x001ca440u;
         {
-            auto u32 = [&](uint32_t off) { uint32_t v; std::memcpy(&v, rdram + manager + off, 4); return v; };
-            std::cout << "[vp2s-diag]   cd manager 0x" << std::hex << manager << std::dec
-                      << " sema+10=" << u32(0x10) << " sema+18=" << u32(0x18) << " sema+28=" << u32(0x28)
-                      << " pending+5c=" << int(rdram[manager + 0x5c]) << " enabled+9181=" << int(rdram[manager + 0x9181])
-                      << " busy+9183=" << int(rdram[manager + 0x9183]) << " lba+17c=0x" << std::hex << u32(0x17c)
-                      << std::dec << std::endl;
+            auto u32 = [&](uint32_t off) { uint32_t v; std::memcpy(&v, rdram + kCdManager + off, 4); return v; };
+            auto sema = [&](uint32_t off)
+            {
+                const int id = static_cast<int>(u32(off));
+                std::string text = std::to_string(id);
+                if (const EeSemaphore *s = runtime.eeScheduler().semaphore(id))
+                {
+                    text += "(" + std::to_string(s->count) + "/" + std::to_string(s->maxCount) + " w" +
+                            std::to_string(s->waiters.size()) + ")";
+                }
+                return text;
+            };
+            std::cout << "[vp2s-diag]   cd manager sema+10=" << sema(0x10) << " sema+18=" << sema(0x18)
+                      << " sema+28=" << sema(0x28) << " pending+5c=" << int(rdram[kCdManager + 0x5c])
+                      << " +5e=" << int(rdram[kCdManager + 0x5e]) << " +68/69/6a=" << int(rdram[kCdManager + 0x68])
+                      << "/" << int(rdram[kCdManager + 0x69]) << "/" << int(rdram[kCdManager + 0x6a])
+                      << " enabled+9181=" << int(rdram[kCdManager + 0x9181])
+                      << " busy+9183=" << int(rdram[kCdManager + 0x9183]) << std::hex << " lba+84=0x" << u32(0x84)
+                      << " pos+88=0x" << u32(0x88) << " end+8c=0x" << u32(0x8c) << " start+9194=0x" << u32(0x9194)
+                      << " count+91a0=0x" << u32(0x91a0) << " c4=0x" << u32(0xc4) << std::dec
+                      << " stream+c8/c9/9186=" << int(rdram[kCdManager + 0xc8]) << "/" << int(rdram[kCdManager + 0xc9])
+                      << "/" << int(rdram[kCdManager + 0x9186]) << std::endl;
+        }
+
+        // File request manager (pointer at global+8): request queue pumped by FUN_00102e40 and
+        // FUN_001032a0. Entries are 0x2c bytes; entry 0 heads a list linked through +0x14.
+        constexpr uint32_t kGlobal = 0x001c8c80u;
+        {
+            auto rd32 = [&](uint32_t addr) { uint32_t v; std::memcpy(&v, rdram + (addr & 0x1ffffffu), 4); return v; };
+            const uint32_t files = rd32(kGlobal + 8);
+            std::cout << "[vp2s-diag]   boot state+110=" << int(rdram[kGlobal + 0x110]) << std::hex
+                      << " file manager 0x" << files << std::dec;
+            if (files >= 0x100000u && files < PS2_RAM_SIZE)
+            {
+                const uint32_t table = rd32(files + 0x14);
+                std::cout << " count=" << rd32(files + 0x18) << " current=" << rd32(files + 0x1c)
+                          << " +2c..30=" << int(rdram[files + 0x2c]) << "/" << int(rdram[files + 0x2d]) << "/"
+                          << int(rdram[files + 0x2e]) << "/" << int(rdram[files + 0x2f]) << "/" << int(rdram[files + 0x30])
+                          << " queue:";
+                uint32_t index = rd32(table + 0x14);
+                for (int guard = 0; index != 0u && guard < 16; ++guard)
+                {
+                    const uint32_t entry = table + index * 0x2cu;
+                    std::cout << " [#" << index << " type=" << rd32(entry) << " file=" << rd32(entry + 0x10)
+                              << " kind=" << int(rdram[entry + 0x2a]) << " used=" << int(rdram[entry + 0x28])
+                              << " started=" << int(rdram[entry + 0x29]) << std::hex << " buf=0x" << rd32(entry + 4)
+                              << std::dec << "]";
+                    index = rd32(entry + 0x14);
+                }
+            }
+            std::cout << std::endl;
         }
         // Sound RPC worker object (thread FUN_001086a0): request queue and its semaphore.
         constexpr uint32_t kSound = 0x001d5990u;
@@ -142,8 +187,42 @@ namespace
                 std::cout << " (no such semaphore)";
             }
             std::cout << std::endl;
+
+            // Sound bank transfer queue of the sound manager (*global): ring +0x194..+0x1a0, read
+            // +0x198, write +0x19c, sub-state +0x148 (FUN_001091a0; 5 waits for the IOP's SIF command).
+            auto rd32 = [&](uint32_t addr) { uint32_t v; std::memcpy(&v, rdram + (addr & 0x1ffffffu), 4); return v; };
+            const uint32_t sound = rd32(kGlobal);
+            if (sound >= 0x100000u && sound < PS2_RAM_SIZE)
+            {
+                std::cout << std::hex << "[vp2s-diag]   sound manager 0x" << sound << " transfer state+148=" << std::dec
+                          << int(rdram[sound + 0x148]) << std::hex << " handle+150=0x" << rd32(sound + 0x150)
+                          << " iop+14c=0x" << rd32(sound + 0x14c) << " read=0x" << rd32(sound + 0x198) << " write=0x"
+                          << rd32(sound + 0x19c);
+                const uint32_t head = rd32(sound + 0x198);
+                if (head != rd32(sound + 0x19c) && head >= 0x100000u && head < PS2_RAM_SIZE)
+                {
+                    std::cout << " head{left=0x" << rd32(head) << " src=0x" << rd32(head + 4) << " buf=0x" << rd32(head + 8) << "}";
+                }
+                std::cout << std::dec << std::endl;
+            }
         }
         printIopDiagnostics(runtime);
+
+        // VP2S_DUMP=<address>:<size> saves that guest memory to vp2s_dump.bin (overwritten each time).
+        if (const char *dump = std::getenv("VP2S_DUMP"))
+        {
+            const unsigned long address = std::strtoul(dump, nullptr, 0) & PS2_RAM_MASK;
+            const char *colon = std::strchr(dump, ':');
+            const unsigned long size = colon ? std::strtoul(colon + 1, nullptr, 0) : 0u;
+            if (size != 0u && address + size <= PS2_RAM_SIZE)
+            {
+                if (std::FILE *out = std::fopen("vp2s_dump.bin", "wb"))
+                {
+                    std::fwrite(rdram + address, 1, size, out);
+                    std::fclose(out);
+                }
+            }
+        }
     }
 
     void initDiagnostics(PS2Runtime &, void *userData)

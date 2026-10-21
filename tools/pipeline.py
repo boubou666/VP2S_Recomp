@@ -1,24 +1,25 @@
 """Build pipeline: game ISO -> recompiled C++ for the main ELF and every code module.
 
 Stages, in order (each skips the work whose outputs are newer than its inputs):
-  extract  tools/extract.py in Docker                          -> build/extract/
+  extract  tools/extract.py                                    -> build/extract/
   wrap     main ELF copy + tools/wrap_elf.py per module         -> build/elf/
   ghidra   Ghidra headless analysis + PS2Recomp function export -> build/ghidra/export/
-  tool     PS2Recomp fork tools (ps2_recomp, ps2_analyzer)      -> external/PS2Recomp/out/linux-recomp/
+  tool     MSVC build of the fork tools (ps2_recomp, ps2_analyzer) -> build/tests/
   sdk      ps2_analyzer SDK signature matching per input        -> build/sdk/<name>.toml
   entries  functions reached only through pointers              -> build/entries/<name>.txt
   recomp   ps2_recomp per input (Ghidra map + SDK bindings);
            modules in overlay module mode                       -> build/recomp/<name>/
   report   per-input and total figures                         -> build/report.json, build/report.md
   port     MSVC build of port/ (runtime + generated code)      -> build/port/vp2s.exe
+  test     MSVC build of the fork test suites, then run them    -> build/tests/<suite>.log
 
 Usage (Windows, from the project root):
   python tools/pipeline.py [--from STAGE | --only STAGE] [--force] [--inputs main,mod003]
 
-The port stage needs the Visual Studio 2022 C++ build tools (found with vswhere, or VP2S_VS_DIR).
-Requires Docker with the vp2s-toolchain image (toolchain/Dockerfile), Ghidra
-(GHIDRA_INSTALL_DIR, default D:\\Tools\\ghidra_12.1.4_PUBLIC) and the Emotion Engine extension
-zip for that Ghidra version (VP2S_GHIDRA_EE_ZIP, default in D:\\Tools\\downloads).
+Everything runs natively on Windows. Requires the Visual Studio 2022 C++ build tools (found
+with vswhere, or VP2S_VS_DIR), Ghidra (GHIDRA_INSTALL_DIR, default D:\\Tools\\ghidra_12.1.4_PUBLIC)
+and the Emotion Engine extension zip for that Ghidra version (VP2S_GHIDRA_EE_ZIP, default in
+D:\\Tools\\downloads). toolchain/Dockerfile remains for Linux builds of the fork, not needed here.
 """
 import argparse
 import getpass
@@ -27,6 +28,7 @@ import zipfile
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -39,42 +41,39 @@ ELF_DIR = BUILD / "elf"
 GHIDRA_DIR = BUILD / "ghidra"
 EXPORT_DIR = GHIDRA_DIR / "export"
 RECOMP_DIR = BUILD / "recomp"
+# ps2_recomp writes here first; only changed files are then copied to RECOMP_DIR.
+STAGING_DIR = BUILD / "recomp-staging"
 FORK = ROOT / "external" / "PS2Recomp"
-TOOL_BUILD = FORK / "out" / "linux-recomp"
-TOOL = TOOL_BUILD / "ps2xRecomp" / "ps2_recomp"
-ANALYZER = TOOL_BUILD / "ps2xAnalyzer" / "ps2_analyzer"
+# The fork tools and its test suites share one MSVC build of the fork.
+TEST_BUILD = BUILD / "tests"
+TOOL = TEST_BUILD / "ps2xRecomp" / "ps2_recomp.exe"
+ANALYZER = TEST_BUILD / "ps2xAnalyzer" / "ps2_analyzer.exe"
 SDK_DIR = BUILD / "sdk"
 ENTRIES_DIR = BUILD / "entries"
 # Optional offline cache of CMake dependency sources (<name>-src directories, e.g. copied
 # from a previous PS2Recomp build's _deps); dependencies are downloaded when absent.
 DEPS_CACHE = BUILD / "deps"
-IMAGE = "vp2s-toolchain"
 GHIDRA = Path(os.environ.get("GHIDRA_INSTALL_DIR", r"D:\Tools\ghidra_12.1.4_PUBLIC"))
 EE_ZIP = Path(os.environ.get("VP2S_GHIDRA_EE_ZIP", r"D:\Tools\downloads\ghidra-emotionengine-reloaded_12.1.4.zip"))
 GHIDRA_SETTINGS = GHIDRA_DIR / "settings"
 PORT_BUILD = BUILD / "port"
-STAGES = ["extract", "wrap", "ghidra", "tool", "sdk", "entries", "recomp", "report", "port"]
+STAGES = ["extract", "wrap", "ghidra", "tool", "sdk", "entries", "recomp", "report", "port", "test"]
 # Roles of the modules without an original file name, inferred during the audit (docs/AUDIT.md).
 INFERRED_ROLES = {1: "resident core (inferred)", 2: "title / memory card (inferred)", 3: "field engine (inferred)"}
 
 
 # ---------------------------------------------------------------- helpers
 
-def cpath(path: Path) -> str:
-    """Container path of a file under the project root (mounted at /work)."""
-    return "/work/" + path.resolve().relative_to(ROOT).as_posix()
+def hpath(path: Path) -> str:
+    """Absolute path with forward slashes, as written into the recompiler configs."""
+    return path.resolve().as_posix()
 
 
-def docker(*args: str, log: Path | None = None) -> None:
-    cmd = ["docker", "run", "--rm", "-v", f"{ROOT}:/work", IMAGE, *args]
-    if log:
-        with open(log, "w", encoding="utf-8") as out:
-            result = subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT)
-    else:
-        result = subprocess.run(cmd)
+def run_logged(cmd: list[str], log: Path) -> None:
+    with open(log, "w", encoding="utf-8", errors="replace") as out:
+        result = subprocess.run(cmd, stdout=out, stderr=subprocess.STDOUT)
     if result.returncode != 0:
-        raise SystemExit(f"docker step failed ({result.returncode}): {' '.join(args[:3])}"
-                         + (f" - see {log}" if log else ""))
+        raise SystemExit(f"{Path(cmd[0]).name} failed ({result.returncode}) - see {log}")
 
 
 def mtime(path: Path) -> float:
@@ -110,7 +109,8 @@ def stage_extract(args) -> None:
     if not stale([EXTRACT / "manifest.json"], inputs, args.force):
         print("  up to date")
         return
-    docker("python3", "-I", "/work/tools/extract.py", cpath(isos[0]), cpath(EXTRACT))
+    run_logged([sys.executable, "-I", str(ROOT / "tools" / "extract.py"), str(isos[0]), str(EXTRACT)],
+               BUILD / "extract.log")
 
 
 def stage_wrap(args) -> None:
@@ -120,16 +120,20 @@ def stage_wrap(args) -> None:
     if stale([main_elf], [main_src], args.force):
         shutil.copyfile(main_src, main_elf)
 
+    from wrap_elf import wrap
+
     wrapper = ROOT / "tools" / "wrap_elf.py"
-    commands = []
+    flags = struct.unpack_from("<I", main_src.read_bytes(), 0x24)[0]
+    wrapped = 0
     for module in modules():
         src, dst = EXTRACT / "modules" / module["file"], ELF_DIR / f"{module_name(module)}.elf"
         if stale([dst], [src, wrapper], args.force):
-            commands.append(f"python3 -I /work/tools/wrap_elf.py '{cpath(src)}' '{cpath(dst)}' "
-                            f"--flags-from '{cpath(main_src)}'")
-    if commands:
-        docker("sh", "-c", " && ".join(commands), log=BUILD / "wrap.log")
-    print(f"  {len(commands)} module(s) wrapped, {len(modules()) - len(commands)} up to date")
+            # Rewrite only on change so unchanged modules are not reanalyzed downstream.
+            elf = wrap(src.read_bytes(), flags)
+            if not dst.exists() or dst.read_bytes() != elf:
+                dst.write_bytes(elf)
+                wrapped += 1
+    print(f"  {wrapped} module(s) wrapped, {len(modules()) - wrapped} up to date")
 
 
 def ghidra_env() -> dict:
@@ -196,30 +200,22 @@ def stage_tool(args) -> None:
     if not stale([TOOL, ANALYZER], sources, args.force):
         print("  up to date")
         return
-    deps = []
-    if DEPS_CACHE.is_dir():
-        deps = [f"-DFETCHCONTENT_SOURCE_DIR_{src.name[:-4].upper()}={cpath(src)}"
-                for src in DEPS_CACHE.glob("*-src")]
-    TOOL_BUILD.mkdir(parents=True, exist_ok=True)
-    docker("cmake", "-S", cpath(FORK), "-B", cpath(TOOL_BUILD), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
-           "-DPS2X_BUILD_RUNTIME=OFF", "-DPS2X_BUILD_ANALYZER=ON", "-DPS2X_BUILD_TEST=OFF",
-           "-DPS2X_BUILD_STUDIO=OFF", *deps, log=TOOL_BUILD / "configure.log")
-    docker("cmake", "--build", cpath(TOOL_BUILD), "--target", "ps2_recomp", "ps2_analyzer",
-           log=TOOL_BUILD / "build.log")
+    configure_fork_build(args.force)
+    run_msvc([f'cmake --build "{TEST_BUILD.as_posix()}" --target ps2_recomp ps2_analyzer'],
+             TEST_BUILD / "tools.log")
 
 
 def stage_sdk(args) -> None:
     """Match Sony SDK functions by signature so they bind to the runtime's HLE handlers."""
     SDK_DIR.mkdir(parents=True, exist_ok=True)
-    commands = []
+    analyzed = 0
     for name in input_names(args.inputs):
         elf, out = ELF_DIR / f"{name}.elf", SDK_DIR / f"{name}.toml"
         if stale([out], [elf, ANALYZER], args.force):
-            commands.append(f"'{cpath(ANALYZER)}' '{cpath(elf)}' '{cpath(out)}' > '{cpath(SDK_DIR / name)}.log' 2>&1")
-    if commands:
-        docker("sh", "-c", " && ".join(commands), log=SDK_DIR / "sdk.log")
+            run_logged([str(ANALYZER), str(elf), str(out)], SDK_DIR / f"{name}.log")
+            analyzed += 1
     total = sum(len(sdk_bindings(SDK_DIR / f"{n}.toml")) for n in input_names(args.inputs))
-    print(f"  {len(commands)} input(s) analyzed; {total} SDK bindings in total")
+    print(f"  {analyzed} input(s) analyzed; {total} SDK bindings in total")
 
 
 def stage_entries(args) -> None:
@@ -283,9 +279,9 @@ def write_config(name: str) -> Path:
     """Export TOML rewritten with container paths; modules get overlay module mode."""
     text = (EXPORT_DIR / f"{name}.toml").read_text()
     replacements = {
-        "input": cpath(ELF_DIR / f"{name}.elf"),
-        "output": cpath(RECOMP_DIR / name),
-        "ghidra_output": cpath(EXPORT_DIR / f"{name}_functions.csv"),
+        "input": hpath(ELF_DIR / f"{name}.elf"),
+        "output": hpath(STAGING_DIR / name),
+        "ghidra_output": hpath(EXPORT_DIR / f"{name}_functions.csv"),
     }
     for key, value in replacements.items():
         text = re.sub(rf'^{key} = .*$', f'{key} = "{value}"', text, count=1, flags=re.M)
@@ -323,13 +319,47 @@ def stage_recomp(args) -> None:
         inputs = [config, EXPORT_DIR / f"{name}_functions.csv", TOOL]
         if not stale([stamp], inputs, args.force):
             continue
-        shutil.rmtree(RECOMP_DIR / name, ignore_errors=True)
+        staging = STAGING_DIR / name
+        shutil.rmtree(staging, ignore_errors=True)
         start = time.time()
-        docker(cpath(TOOL), cpath(config), log=RECOMP_DIR / f"{name}.log")
+        run_logged([str(TOOL), str(config)], RECOMP_DIR / f"{name}.log")
+        changed, stats = sync_generated(staging, RECOMP_DIR / name)
+        shutil.rmtree(staging, ignore_errors=True)
+        (RECOMP_DIR / name / ".stats").write_text(json.dumps(stats))
         stamp.write_text(f"{time.time() - start:.1f}\n")
         done += 1
-        print(f"  {name}: {time.time() - start:.0f}s")
+        print(f"  {name}: {time.time() - start:.0f}s, {changed} file(s) changed")
     print(f"  {done} input(s) recompiled")
+
+
+def sync_generated(source: Path, target: Path) -> tuple[int, dict]:
+    """Mirror source into target, touching only files whose content changed.
+
+    Unchanged generated files keep their timestamps, so the MSVC build does not recompile
+    them (nor the unity groups that include them). Also returns the report figures, counted
+    while the files are in memory anyway.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    fresh = {p.relative_to(source) for p in source.rglob("*") if p.is_file()}
+    changed = 0
+    stats = {"cpp_files": 0, "cpp_lines": 0, "bytes": 0}
+    for rel in fresh:
+        src, dst = source / rel, target / rel
+        data = src.read_bytes()
+        stats["bytes"] += len(data)
+        if rel.suffix == ".cpp":
+            stats["cpp_files"] += 1
+            stats["cpp_lines"] += data.count(b"\n")
+        if not dst.exists() or dst.read_bytes() != data:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(data)
+            changed += 1
+    for old in [p for p in target.rglob("*") if p.is_file()]:
+        rel = old.relative_to(target)
+        if rel not in fresh and rel.name not in (".done", ".stats"):
+            old.unlink()
+            changed += 1
+    return changed, stats
 
 
 def stage_report(args) -> None:
@@ -344,11 +374,13 @@ def stage_report(args) -> None:
         export = (EXPORT_DIR / f"{name}.toml").read_text()
         functions = re.search(r"function_count = (\d+)", export)
         out = RECOMP_DIR / name
-        cpp = list(out.glob("*.cpp"))
-        lines = 0
-        for path in cpp:
-            with open(path, "rb") as f:
-                lines += sum(chunk.count(b"\n") for chunk in iter(lambda: f.read(1 << 20), b""))
+        stats_file = out / ".stats"
+        if stats_file.exists():  # written by stage_recomp
+            stats = json.loads(stats_file.read_text())
+        else:
+            cpp = list(out.glob("*.cpp"))
+            stats = {"cpp_files": len(cpp), "cpp_lines": sum(p.read_bytes().count(b"\n") for p in cpp),
+                     "bytes": sum(p.stat().st_size for p in out.iterdir() if p.is_file())}
         info = module_info.get(name, {})
         rows.append({
             "input": name,
@@ -358,9 +390,9 @@ def stage_report(args) -> None:
             "ok": "Recompilation completed successfully" in text,
             "warnings": int(counts.group(1)) if counts else None,
             "errors": int(counts.group(2)) if counts else None,
-            "cpp_files": len(cpp),
-            "cpp_lines": lines,
-            "megabytes": round(sum(p.stat().st_size for p in out.iterdir() if p.is_file()) / 2**20, 1),
+            "cpp_files": stats["cpp_files"],
+            "cpp_lines": stats["cpp_lines"],
+            "megabytes": round(stats["bytes"] / 2**20, 1),
             "seconds": float((out / ".done").read_text()) if (out / ".done").exists() else None,
         })
     totals = {k: sum(r[k] or 0 for r in rows) for k in ("functions", "warnings", "errors", "cpp_files", "cpp_lines", "megabytes")}
@@ -411,20 +443,59 @@ def run_msvc(commands: list[str], log: Path) -> None:
         raise SystemExit(f"MSVC step failed ({result.returncode}) - see {log}")
 
 
+def deps_args() -> str:
+    """FetchContent overrides pointing at the dependency source cache (no network needed)."""
+    if not DEPS_CACHE.is_dir():
+        return ""
+    return " ".join(f'"-DFETCHCONTENT_SOURCE_DIR_{src.name[:-4].upper()}={src.as_posix()}"'
+                    for src in DEPS_CACHE.glob("*-src"))
+
+
 def stage_port(args) -> None:
     PORT_BUILD.mkdir(parents=True, exist_ok=True)
     if args.force or not (PORT_BUILD / "CMakeCache.txt").exists():
-        deps = []
-        if DEPS_CACHE.is_dir():
-            deps = [f'"-DFETCHCONTENT_SOURCE_DIR_{src.name[:-4].upper()}={src.as_posix()}"'
-                    for src in DEPS_CACHE.glob("*-src")]
         print("  configuring (log: build/port/configure.log)")
         run_msvc([f'cmake -S "{(ROOT / "port").as_posix()}" -B "{PORT_BUILD.as_posix()}" -G Ninja '
-                  f'-DCMAKE_BUILD_TYPE=Release {" ".join(deps)}'], PORT_BUILD / "configure.log")
+                  f'-DCMAKE_BUILD_TYPE=Release {deps_args()}'], PORT_BUILD / "configure.log")
     print("  building vp2s.exe (log: build/port/build.log)", flush=True)
     run_msvc([f'cmake --build "{PORT_BUILD.as_posix()}" --target vp2s'], PORT_BUILD / "build.log")
     exe = PORT_BUILD / "vp2s.exe"
     print(f"  {exe.relative_to(ROOT)}: {exe.stat().st_size / 2**20:.1f} MB")
+
+
+TEST_TARGETS = ["ps2x_tests", "ps2_iop_emulator_tests", "ps2_iop_import_tests",
+                "ps2_iop_compatibility_tests", "ps2_iop_import_version_tests"]
+
+
+def configure_fork_build(force: bool) -> None:
+    """MSVC build of the whole fork: recompiler tools, runtime and test suites."""
+    TEST_BUILD.mkdir(parents=True, exist_ok=True)
+    if force or not (TEST_BUILD / "CMakeCache.txt").exists():
+        print("  configuring (log: build/tests/configure.log)")
+        run_msvc([f'cmake -S "{FORK.as_posix()}" -B "{TEST_BUILD.as_posix()}" -G Ninja -DCMAKE_BUILD_TYPE=Release '
+                  "-DPS2X_BUILD_STUDIO=OFF -DPS2X_ENABLE_FFMPEG=OFF -DPS2X_ENABLE_DEBUG_UI=OFF "
+                  "-DPS2X_ENABLE_SCCACHE=OFF -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF -DPS2X_IOP_BUILD_TESTS=ON "
+                  f"{deps_args()}"], TEST_BUILD / "configure.log")
+
+
+def stage_test(args) -> None:
+    """Build the fork's test suites with MSVC and run them."""
+    configure_fork_build(args.force)
+    print("  building (log: build/tests/build.log)", flush=True)
+    run_msvc([f'cmake --build "{TEST_BUILD.as_posix()}" --target {" ".join(TEST_TARGETS)}'], TEST_BUILD / "build.log")
+    failed = []
+    for target in TEST_TARGETS:
+        exe = next(TEST_BUILD.rglob(f"{target}.exe"))
+        log = TEST_BUILD / f"{target}.log"
+        with open(log, "w", encoding="utf-8", errors="replace") as out:
+            # Some tests read fork sources by relative path: run from the fork root.
+            code = subprocess.run([str(exe)], cwd=FORK, stdout=out, stderr=subprocess.STDOUT).returncode
+        summary = re.findall(r"^(?:Total Tests|Failed): \d+", log.read_text(errors="replace"), flags=re.M)
+        print(f"  {target}: exit {code}" + (f" ({', '.join(summary)})" if summary else ""))
+        if code != 0:
+            failed.append(target)
+    if failed:
+        raise SystemExit(f"failing test suites: {', '.join(failed)} - see build/tests/<suite>.log")
 
 
 # ---------------------------------------------------------------- main

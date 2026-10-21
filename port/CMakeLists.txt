@@ -10,7 +10,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(VP2S_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(VP2S_FORK "${VP2S_ROOT}/external/PS2Recomp")
 set(VP2S_RECOMP_DIR "${VP2S_ROOT}/build/recomp" CACHE PATH "Recompiled C++ (tools/pipeline.py output)")
-set(VP2S_UNITY_BATCH_SIZE 64 CACHE STRING "Generated sources merged per unity-build translation unit")
 set(VP2S_GENERATED_OPT "/O2 /Ob1" CACHE STRING "MSVC optimization flags for the generated code (Release)")
 
 # PS2Recomp fork: only the runtime and IOP libraries are used.
@@ -71,9 +70,34 @@ add_executable(vp2s ${VP2S_GENERATED_SOURCES})
 target_include_directories(vp2s PRIVATE ${VP2S_GENERATED_DIRS})
 target_link_libraries(vp2s PRIVATE vp2s_frontend ps2_runtime)
 
+# Unity groups by input and guest address range (generated file names end with _0x<address>):
+# adding or removing a function only changes the translation unit of its range. Positional
+# batches would shift every later batch and rebuild the whole game.
+set(VP2S_UNITY_RANGE_SHIFT 13 CACHE STRING "Address bits per unity group (13 = 8 KiB of guest code)")
+set(VP2S_UNITY_GROUPS "")
+foreach(source IN LISTS VP2S_GENERATED_SOURCES)
+    get_filename_component(input_dir "${source}" DIRECTORY)
+    get_filename_component(input "${input_dir}" NAME)
+    if(source MATCHES "_0x([0-9a-fA-F]+)\\.cpp$")
+        math(EXPR range "0x${CMAKE_MATCH_1} >> ${VP2S_UNITY_RANGE_SHIFT}" OUTPUT_FORMAT HEXADECIMAL)
+        set(group "${input}_${range}")
+    else()
+        set(group "${input}_misc")
+    endif()
+    if(NOT DEFINED VP2S_GROUP_${group})
+        list(APPEND VP2S_UNITY_GROUPS "${group}")
+    endif()
+    list(APPEND VP2S_GROUP_${group} "${source}")
+endforeach()
+foreach(group IN LISTS VP2S_UNITY_GROUPS)
+    set_source_files_properties(${VP2S_GROUP_${group}} PROPERTIES UNITY_GROUP "${group}")
+endforeach()
+list(LENGTH VP2S_UNITY_GROUPS group_count)
+message(STATUS "VP2S: ${group_count} unity groups")
+
 set_target_properties(vp2s PROPERTIES
     UNITY_BUILD ON
-    UNITY_BUILD_BATCH_SIZE "${VP2S_UNITY_BATCH_SIZE}"
+    UNITY_BUILD_MODE GROUP
 )
 
 set(VP2S_RUNTIME_INCLUDE "${VP2S_FORK}/ps2xRuntime/include")

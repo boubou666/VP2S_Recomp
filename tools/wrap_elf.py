@@ -3,9 +3,13 @@
 The module file (as written by extract.py) is mapped at its load address with its
 0x80-byte header in memory, exactly as the game loads it. Sections come from the header:
   .modhdr load .. load+0x80                (WA; PS2Recomp reads the resident guard here)
-  .text   load+0x80 .. load+text_size      (AX)
+  .text   load+0x80 .. load+text_size      (AX; extended to the end of a function that
+          runs past text_size, as in modules 2, 16, 19 and 22)
   .data   load+text_size .. +data_size     (WA)
   .bss    after the file image, bss_size   (WA, NOBITS)
+CodeWarrior puts the static initializers (called through the constructor table at header
++0x18..+0x1c) at the end of the data, just before that table. When a module has some, that
+part of .data becomes an executable .init section and the table a .ctors section.
 
 Usage: python3 -I tools/wrap_elf.py <module.bin> <out.elf> [--flags-from <game ELF>]
 """
@@ -16,30 +20,70 @@ EHDR = struct.Struct("<16sHHIIIIIHHHHHH")
 PHDR = struct.Struct("<8I")
 SHDR = struct.Struct("<10I")
 R5900_EABI64_FLAGS = 0x20924000  # e_flags of SLES_546.45 (5900, eabi64, mips3)
+JR_RA = 0x03E00008
+
+
+def ctor_code_range(module: bytes) -> tuple[int, int, int] | None:
+    """Image offsets (code start, table start, table end) of the static initializers, if any."""
+    load, text, dsize, _ = struct.unpack_from("<4I", module, 8)
+    table_lo, table_hi = struct.unpack_from("<2I", module, 0x18)
+    if not table_lo or table_hi <= table_lo or table_hi - load > len(module):
+        return None
+    pointers = [struct.unpack_from("<I", module, a - load)[0] for a in range(table_lo, table_hi, 4)]
+    if not all(load + text <= p < table_lo for p in pointers):
+        return None
+    return min(pointers) - load, table_lo - load, table_hi - load
+
+
+def text_end(module: bytes, text: int) -> int:
+    """Header text end, extended to the end of a function that runs past it (module 2's last
+    function ends 0x28 bytes after it)."""
+    word = lambda off: struct.unpack_from("<I", module, off)[0] if 0 <= off <= len(module) - 4 else None
+    back = text - 4
+    while back > text - 20 and word(back) == 0:
+        back -= 4
+    if word(back - 4) == JR_RA or word(back) == JR_RA:  # clean end: jr ra, delay slot, padding
+        return text
+    for off in range(text, min(text + 0x1000, len(module) - 4), 4):
+        if word(off) == JR_RA:
+            return off + 8
+    return text
 
 
 def wrap(module: bytes, flags: int) -> bytes:
     load, text, dsize, bss = struct.unpack_from("<4I", module, 8)
-    text_lo, text_hi = 0x80, text
-    data_lo, data_hi = text, min(text + dsize, len(module))
-    shstr = b"\0.modhdr\0.text\0.data\0.bss\0.shstrtab\0"
-    names = {n: shstr.index(n.encode() + b"\0") for n in (".modhdr", ".text", ".data", ".bss", ".shstrtab")}
-
+    text_lo, text_hi = 0x80, text_end(module, text)
+    data_lo, data_hi = text_hi, min(text + dsize, len(module))
     image_off = 0x1000  # page-aligned file offset of the module image
+
+    # (name, type, flags, image offset, size, alignment); offsets are relative to the image.
+    parts = [(".modhdr", 1, 3, 0, text_lo, 0x10),
+             (".text", 1, 6, text_lo, text_hi - text_lo, 0x80)]
+    init = ctor_code_range(module)
+    if init:
+        init_lo, table_lo, table_hi = init
+        # The table may lie just past the header's data size, still inside the image.
+        parts += [(".data", 1, 3, data_lo, init_lo - data_lo, 0x10),
+                  (".init", 1, 6, init_lo, table_lo - init_lo, 0x10),
+                  (".ctors", 1, 3, table_lo, max(data_hi, table_hi) - table_lo, 0x4)]
+    else:
+        parts.append((".data", 1, 3, data_lo, data_hi - data_lo, 0x10))
+    parts.append((".bss", 8, 3, len(module), bss, 0x10))
+
+    names = [p[0] for p in parts] + [".shstrtab"]
+    shstr = b"\0" + b"".join(n.encode() + b"\0" for n in names)
+    index = {n: shstr.index(b"\0" + n.encode() + b"\0") + 1 for n in names}
     shstr_off = image_off + len(module)
     shoff = (shstr_off + len(shstr) + 3) & ~3
 
+    sections = [SHDR.pack(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)]
+    for name, kind, sflags, off, size, align in parts:
+        sections.append(SHDR.pack(index[name], kind, sflags, load + off, image_off + off, size, 0, 0, align, 0))
+    sections.append(SHDR.pack(index[".shstrtab"], 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0))
+
     eh = EHDR.pack(b"\x7fELF\x01\x01\x01" + bytes(9), 2, 8, 1, load + 0x80, EHDR.size, shoff, flags,
-                   EHDR.size, PHDR.size, 1, SHDR.size, 6, 5)
+                   EHDR.size, PHDR.size, 1, SHDR.size, len(sections), len(sections) - 1)
     ph = PHDR.pack(1, image_off, load, load, len(module), len(module) + bss, 7, 0x80)
-    sections = [
-        SHDR.pack(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-        SHDR.pack(names[".modhdr"], 1, 3, load, image_off, text_lo, 0, 0, 0x10, 0),
-        SHDR.pack(names[".text"], 1, 6, load + text_lo, image_off + text_lo, text_hi - text_lo, 0, 0, 0x80, 0),
-        SHDR.pack(names[".data"], 1, 3, load + data_lo, image_off + data_lo, data_hi - data_lo, 0, 0, 0x10, 0),
-        SHDR.pack(names[".bss"], 8, 3, load + len(module), image_off + len(module), bss, 0, 0, 0x10, 0),
-        SHDR.pack(names[".shstrtab"], 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0),
-    ]
     out = bytearray(eh + ph)
     out += bytes(image_off - len(out)) + module + shstr
     out += bytes(shoff - len(out)) + b"".join(sections)
