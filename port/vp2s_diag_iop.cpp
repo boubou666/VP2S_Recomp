@@ -33,7 +33,8 @@ void printIopDiagnostics(PS2Runtime &runtime)
 
     const ps2x::iop::DebugSnapshot iop = runtime.iopDebugSnapshot();
     std::cout << "[vp2s-iop] IOP emulator: modules=" << iop.emulatorLoadedModules << " threads=" << iop.emulatorThreads
-              << " rpcServers=" << iop.emulatorRpcServers << " instructions=" << iop.emulatorInstructions << std::endl;
+              << " rpcServers=" << iop.emulatorRpcServers << " instructions=" << iop.emulatorInstructions
+              << " cycles=" << iop.emulatorCycles << std::endl;
     for (const auto &service : iop.services)
     {
         std::cout << "[vp2s-iop]   service " << service.name << (service.active ? "" : " (inactive)") << " sids:";
@@ -43,7 +44,7 @@ void printIopDiagnostics(PS2Runtime &runtime)
         }
         std::cout << std::endl;
     }
-    const size_t shown = std::min<size_t>(iop.diagnostics.size(), 12u);
+    const size_t shown = std::min<size_t>(iop.diagnostics.size(), 30u);
     for (size_t i = iop.diagnostics.size() - shown; i < iop.diagnostics.size(); ++i)
     {
         std::cout << "[vp2s-iop]   diag: " << iop.diagnostics[i] << std::endl;

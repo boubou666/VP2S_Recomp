@@ -2,7 +2,7 @@
 //
 // Usage: vp2s.exe <path to SLES_546.45> (the boot ELF extracted by tools/pipeline.py).
 // The disc image is found by the game override (vp2s_overrides.cpp, VP2S_ISO).
-// VP2S_DIAG=1 prints the resident overlay modules, guest threads and IOP/RPC state and saves
+// VP2S_DIAG=1 prints the resident overlay modules, guest threads, IOP/RPC and GS state and saves
 // a screenshot every few seconds. Builds with VP2S_DEBUG_UI show the runtime debugger (F1).
 
 #include "ps2_overlay_modules.h"
@@ -22,6 +22,7 @@
 #include <string>
 
 void printIopDiagnostics(PS2Runtime &runtime); // vp2s_diag_iop.cpp
+void printGsDiagnostics(PS2Runtime &runtime);  // vp2s_diag_gs.cpp
 
 namespace
 {
@@ -207,6 +208,7 @@ namespace
             }
         }
         printIopDiagnostics(runtime);
+        printGsDiagnostics(runtime);
 
         // VP2S_DUMP=<address>:<size> saves that guest memory to vp2s_dump.bin (overwritten each time).
         if (const char *dump = std::getenv("VP2S_DUMP"))
@@ -225,14 +227,16 @@ namespace
         }
     }
 
-    void initDiagnostics(PS2Runtime &, void *userData)
+    void initDiagnostics(PS2Runtime &runtime, void *userData)
     {
+        auto &diag = *static_cast<Diagnostics *>(userData);
+        if (diag.enabled)
+        {
+            runtime.gs().setDebugHistoryPaused(false); // GS event history for [vp2s-gs]
+        }
 #if defined(PS2X_ENABLE_DEBUG_UI)
-        auto &panel = static_cast<Diagnostics *>(userData)->panel;
-        panel.initialize();
-        panel.setVisible(false); // F1 shows it; keeps the game screen (and diagnostic screenshots) clear
-#else
-        (void)userData;
+        diag.panel.initialize();
+        diag.panel.setVisible(false); // F1 shows it; keeps the game screen (and diagnostic screenshots) clear
 #endif
     }
 

@@ -464,7 +464,7 @@ def stage_port(args) -> None:
 
 
 TEST_TARGETS = ["ps2x_tests", "ps2_iop_emulator_tests", "ps2_iop_import_tests",
-                "ps2_iop_compatibility_tests", "ps2_iop_import_version_tests"]
+                "ps2_iop_compatibility_tests", "ps2_iop_import_version_tests", "ps2_iop_sio2_tests"]
 
 
 def configure_fork_build(force: bool) -> None:

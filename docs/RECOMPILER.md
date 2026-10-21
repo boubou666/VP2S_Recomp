@@ -145,7 +145,13 @@ Conception :
 
    État au 2026-10-21 : la clé est juste, et les overlays **cœur (module 1) et titre (module 2) sont chargés, résidents, constructeurs exécutés**. Le jeu tourne dans leur code sans plantage pendant au moins une minute.
 
-   **Blocage actuel** : écran toujours noir. Il reste à voir si le jeu attend quelque chose (CD, son, VSync, carte mémoire) ou s'il dessine sans que l'image n'arrive à l'écran (chemin GS du runtime).
+   - **L'image s'affiche** : l'écran « noir » venait de mes captures (fenêtre réduite, ou capture raylib prise avant le dessin). Le jeu affichait déjà, en français, « Impossible de détecter la manette analogique (DUALSHOCK®2) ».
+   - **Manette** : VP2 lit la manette avec les vrais pilotes IOP (`sio2man`, `sio2d`, `ds2o_d`, `Dbc_Manager`), qui parlent au matériel SIO2. Le fork émule maintenant le contrôleur SIO2 et une DualShock 2 sur le port 0 (modes numérique, analogique et pression, avec les commandes de configuration), alimentée par la manette ou le clavier du PC via `IopHost::readPadState`. Il gère aussi le DMA des canaux 11 et 12 dans `dmacman`, l'appel `sceSifSetDmaIntr` (`sifman` n° 32, dont le rappel libère la sémaphore DMA de `Dbc_Manager`), et le DMA SIF depuis n'importe quelle zone de RAM IOP. Enfin, les VBlanks de l'EE recalent l'horloge de l'IOP, sinon les threads cadencés par VBlank ne tournaient presque jamais. Suite de tests `ps2_iop_sio2_tests`.
+   - Résultat au 2026-10-21 : manette détectée, écran « Choisir format écran : □ 16:9 / △ 4:3 », et les entrées clavier sont prises en compte. Avec △, le jeu passe à la suite.
+
+   **Blocage actuel** : après le choix du format, le jeu lit la vidéo d'introduction (MPEG via IPU), et le portage est compilé sans FFmpeg (`[MPEG] runtime built without FFmpeg`). L'écran reste noir, même en appuyant sur Start. Prochaine étape : activer `PS2X_ENABLE_FFMPEG` (bibliothèques FFmpeg pour Windows) ou faire terminer la vidéo proprement quand le décodage est absent.
+
+   Clavier (sans manette branchée) : flèches ou WASD = croix directionnelle, X ou Espace = ✕, C = ○, Z = □, V = △, Q/E = L1/R1, Maj gauche/droite = L2/R2, Entrée = Start, Tab = Select.
 5. **Jalon : l'écran titre.**
 6. Ensuite : module 3 (exploration), rendu GS natif, VU1 en shader, FMV via FFmpeg.
 
