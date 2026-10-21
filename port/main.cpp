@@ -210,6 +210,26 @@ namespace
         printIopDiagnostics(runtime);
         printGsDiagnostics(runtime);
 
+        // VP2S_WATCH=<address>[,<address>...] prints those guest words (32-bit) each time.
+        if (const char *watch = std::getenv("VP2S_WATCH"))
+        {
+            std::cout << "[vp2s-diag]   watch:";
+            for (const char *cursor = watch; *cursor != '\0';)
+            {
+                char *end = nullptr;
+                const unsigned long address = std::strtoul(cursor, &end, 0) & PS2_RAM_MASK & ~3ul;
+                if (end == cursor)
+                {
+                    break;
+                }
+                uint32_t value = 0;
+                std::memcpy(&value, rdram + address, sizeof(value));
+                std::cout << std::hex << " [0x" << address << "]=0x" << value << std::dec;
+                cursor = *end == ',' ? end + 1 : end;
+            }
+            std::cout << std::endl;
+        }
+
         // VP2S_DUMP=<address>:<size> saves that guest memory to vp2s_dump.bin (overwritten each time).
         if (const char *dump = std::getenv("VP2S_DUMP"))
         {

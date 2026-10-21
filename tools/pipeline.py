@@ -272,6 +272,13 @@ MANUAL_BINDINGS: dict[str, dict[int, str]] = {
         # result slot on its stack. Loads the IRX modules copied to IOP memory at boot.
         0x001400F8: "sceSifLoadModuleBuffer",
     },
+    "mod001": {
+        # libmpeg accessors of mp->sys (pointer at +0x40) next to the matched libmpeg functions:
+        # the runtime emulates libmpeg with its own state, so they must use it too.
+        0x001F0438: "sceMpegIsEnd",
+        0x001F0448: "sceMpegIsRefBuffEmpty",
+        0x001F0458: "sceMpegSetDecodeMode",
+    },
 }
 
 

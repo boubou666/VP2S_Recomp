@@ -19,7 +19,10 @@ set(PS2X_BUILD_TEST OFF CACHE BOOL "" FORCE)
 set(PS2X_BUILD_STUDIO OFF CACHE BOOL "" FORCE)
 set(PS2X_ENABLE_SCCACHE OFF CACHE BOOL "" FORCE)
 # Defaults for this port; override on the cmake command line when needed.
-set(PS2X_ENABLE_FFMPEG OFF CACHE BOOL "Enable FFmpeg-backed MPEG video decoding")
+# FFmpeg decodes the MPEG movies (intro, events); on Windows the fork downloads a prebuilt
+# LGPL shared build (System233/ffmpeg-msvc-prebuilt) and its DLLs are copied beside vp2s.exe.
+option(VP2S_FFMPEG "Decode the game's MPEG movies with FFmpeg" ON)
+set(PS2X_ENABLE_FFMPEG ${VP2S_FFMPEG} CACHE BOOL "Enable FFmpeg-backed MPEG video decoding" FORCE)
 option(VP2S_DEBUG_UI "Show the runtime debugger (ImGui, F1) in vp2s" ON)
 set(PS2X_ENABLE_DEBUG_UI ${VP2S_DEBUG_UI} CACHE BOOL "Build the desktop runtime debug UI" FORCE)
 # Aggressive logs make every generated function log its entry.
@@ -70,6 +73,7 @@ endif()
 add_executable(vp2s ${VP2S_GENERATED_SOURCES})
 target_include_directories(vp2s PRIVATE ${VP2S_GENERATED_DIRS})
 target_link_libraries(vp2s PRIVATE vp2s_frontend ps2_runtime)
+ps2x_stage_ffmpeg_runtime_dlls(vp2s) # no-op without FFmpeg
 
 # Unity groups by input and guest address range (generated file names end with _0x<address>):
 # adding or removing a function only changes the translation unit of its range. Positional

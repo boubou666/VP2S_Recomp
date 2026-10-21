@@ -5,7 +5,14 @@
 #include "runtime/gs/gs_frontend.h"
 
 #include <array>
+#include <cstring>
 #include <iostream>
+#include <string>
+
+namespace ps2_stubs
+{
+    std::string mpegDebugSummary(); // Kernel/Stubs/MPEG.cpp
+}
 
 void printGsDiagnostics(PS2Runtime &runtime)
 {
@@ -38,6 +45,33 @@ void printGsDiagnostics(PS2Runtime &runtime)
             std::cout << " fbp" << fbp << "=" << (lit * 100u) / (640u * 256u) << "%";
         }
         std::cout << std::endl;
+    }
+
+    const std::string mpeg = ps2_stubs::mpegDebugSummary();
+    std::cout << "[vp2s-gs]   mpeg: " << mpeg << std::endl;
+    // VP2's movie player object holds its sceMpeg at +0xce500 (FUN_002b94a0 in the core module):
+    // state +0x15e648, ring bytes +0xc999c/+0xc9998, pictures shown +0x15e658, buffers +0x15e640.
+    if (const size_t at = mpeg.find("[0x"); at != std::string::npos)
+    {
+        const uint32_t player = static_cast<uint32_t>(std::stoul(mpeg.substr(at + 3), nullptr, 16)) - 0xce500u;
+        const uint8_t *rdram = runtime.memory().getRDRAM();
+        auto word = [&](uint32_t offset)
+        {
+            uint32_t value = 0;
+            std::memcpy(&value, rdram + ((player + offset) & PS2_RAM_MASK), sizeof(value));
+            return value;
+        };
+        const uint32_t buffers = word(0x15e640);
+        uint32_t bufferCount = 0;
+        if (buffers != 0u)
+        {
+            std::memcpy(&bufferCount, rdram + ((buffers + 0x8098u) & PS2_RAM_MASK), sizeof(bufferCount));
+        }
+        std::cout << std::hex << "[vp2s-gs]   movie player 0x" << player << ": state=" << word(0x15e648)
+                  << " flag654=" << (word(0x15e654) & 0xFFu) << " shown=" << std::dec << word(0x15e658) << std::hex
+                  << " ring=0x" << word(0xc999c) << "/0x" << word(0xc9998) << " buffers=0x" << buffers
+                  << " count8098=" << std::dec << bufferCount << " waitVsync=" << ((word(0x15e644) >> 8) & 0xFFu)
+                  << std::endl;
     }
 
     const std::vector<GSDebugHistoryEntry> history = runtime.gs().getDebugHistory();
