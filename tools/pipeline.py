@@ -40,11 +40,11 @@ EXTRACT = BUILD / "extract"
 ELF_DIR = BUILD / "elf"
 GHIDRA_DIR = BUILD / "ghidra"
 EXPORT_DIR = GHIDRA_DIR / "export"
-RECOMP_DIR = BUILD / "recomp"
+# VP2S_FORK / VP2S_TEST_BUILD / VP2S_RECOMP / VP2S_PORT_BUILD build another fork checkout (e.g. a
+# git worktree) into its own build directories, without touching the default ones.
+RECOMP_DIR = BUILD / os.environ.get("VP2S_RECOMP", "recomp")
 # ps2_recomp writes here first; only changed files are then copied to RECOMP_DIR.
-STAGING_DIR = BUILD / "recomp-staging"
-# VP2S_FORK / VP2S_TEST_BUILD / VP2S_PORT_BUILD build another fork checkout (e.g. a git
-# worktree) into its own build directories, without touching the default ones.
+STAGING_DIR = BUILD / f"{RECOMP_DIR.name}-staging"
 FORK = Path(os.environ.get("VP2S_FORK", ROOT / "external" / "PS2Recomp"))
 # The fork tools and its test suites share one MSVC build of the fork.
 TEST_BUILD = BUILD / os.environ.get("VP2S_TEST_BUILD", "tests")
@@ -468,7 +468,8 @@ def stage_port(args) -> None:
         archives = sorted(BUILD.glob("*/ThirdParty/ffmpeg-prefix/src/ffmpeg-*.zip"))
         ffmpeg = f'"-DFFMPEG_PREBUILT_URL={archives[0].as_posix()}" ' if archives else ""
         run_msvc([f'cmake -S "{(ROOT / "port").as_posix()}" -B "{PORT_BUILD.as_posix()}" -G Ninja '
-                  f'-DCMAKE_BUILD_TYPE=Release "-DVP2S_FORK={FORK.as_posix()}" {ffmpeg}{deps_args()}'], PORT_BUILD / "configure.log")
+                  f'-DCMAKE_BUILD_TYPE=Release "-DVP2S_FORK={FORK.as_posix()}" '
+                  f'"-DVP2S_RECOMP_DIR={RECOMP_DIR.as_posix()}" {ffmpeg}{deps_args()}'], PORT_BUILD / "configure.log")
     print(f"  building vp2s.exe (log: {(PORT_BUILD / 'build.log').relative_to(ROOT)})", flush=True)
     run_msvc([f'cmake --build "{PORT_BUILD.as_posix()}" --target vp2s'], PORT_BUILD / "build.log")
     exe = PORT_BUILD / "vp2s.exe"
