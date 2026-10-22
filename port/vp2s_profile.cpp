@@ -1,6 +1,9 @@
 // VP2S_PROFILE=<seconds>: samples every thread of the process about 1000 times per second and
 // prints, every <seconds>, where the busiest thread spends its time (exclusive and inclusive
 // functions, resolved from vp2s.pdb). Waiting threads (leaf in ntdll/win32u) count as idle.
+// VP2S_HANG_DUMP=<seconds>: when the host frame loop stops for that long, writes the stack of
+// every thread to vp2s_hang.txt once (again after each recovery). It also catches a host stack
+// overflow and writes the overflowing thread's whole call chain there before the process dies.
 
 #if defined(_WIN32)
 
@@ -13,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -36,16 +40,10 @@ namespace
         std::vector<std::array<uint64_t, kMaxFrames>> stacks;
     };
 
-    size_t captureStack(HANDLE thread, std::array<uint64_t, kMaxFrames> &frames)
+    size_t unwindStack(CONTEXT context, uint64_t *frames, size_t maxFrames)
     {
-        CONTEXT context{};
-        context.ContextFlags = CONTEXT_FULL;
-        if (!GetThreadContext(thread, &context))
-        {
-            return 0;
-        }
         size_t count = 0;
-        while (count < kMaxFrames && context.Rip != 0)
+        while (count < maxFrames && context.Rip != 0)
         {
             frames[count++] = context.Rip;
             DWORD64 imageBase = 0;
@@ -63,6 +61,17 @@ namespace
                              &establisher, nullptr);
         }
         return count;
+    }
+
+    size_t captureStack(HANDLE thread, std::array<uint64_t, kMaxFrames> &frames)
+    {
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_FULL;
+        if (!GetThreadContext(thread, &context))
+        {
+            return 0;
+        }
+        return unwindStack(context, frames.data(), frames.size());
     }
 
     std::string moduleOf(uint64_t address)
@@ -95,6 +104,17 @@ namespace
         return text;
     }
 
+    void ensureSymbols()
+    {
+        static bool symbolsReady = false;
+        if (!symbolsReady)
+        {
+            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+            SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+            symbolsReady = true;
+        }
+    }
+
     bool isIdleLeaf(uint64_t address)
     {
         static std::unordered_map<uint64_t, bool> cache;
@@ -123,13 +143,7 @@ namespace
 
     void report(std::unordered_map<DWORD, ThreadSamples> &threads)
     {
-        static bool symbolsReady = false;
-        if (!symbolsReady)
-        {
-            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-            SymInitialize(GetCurrentProcess(), nullptr, TRUE);
-            symbolsReady = true;
-        }
+        ensureSymbols();
         DWORD busiest = 0;
         uint64_t busiestCount = 0;
         for (const auto &[id, samples] : threads)
@@ -191,6 +205,122 @@ namespace
             for (size_t i = 0; i < sorted.size() && i < 8; ++i)
                 std::cout << " " << (sorted[i].second * 1000 / std::max<uint64_t>(other.busy, 1)) / 10.0 << "% " << sorted[i].first << ";";
             std::cout << std::endl;
+        }
+    }
+
+    void dumpAllThreads(unsigned stalledSeconds)
+    {
+        // Written to its own file: the stuck thread may hold the stdout lock.
+        FILE *out = std::fopen("vp2s_hang.txt", "a");
+        if (!out)
+        {
+            return;
+        }
+        ensureSymbols();
+        std::fprintf(out, "=== host frame loop stalled for %u s ===\n", stalledSeconds);
+        const DWORD self = GetCurrentThreadId();
+        const DWORD process = GetCurrentProcessId();
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        THREADENTRY32 entry{};
+        entry.dwSize = sizeof(entry);
+        for (BOOL ok = Thread32First(snapshot, &entry); ok; ok = Thread32Next(snapshot, &entry))
+        {
+            if (entry.th32OwnerProcessID != process || entry.th32ThreadID == self)
+            {
+                continue;
+            }
+            HANDLE handle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE,
+                                       entry.th32ThreadID);
+            if (!handle)
+            {
+                continue;
+            }
+            std::array<uint64_t, kMaxFrames> frames{};
+            size_t count = 0;
+            if (SuspendThread(handle) != static_cast<DWORD>(-1))
+            {
+                count = captureStack(handle, frames);
+                ResumeThread(handle);
+            }
+            CloseHandle(handle);
+            std::fprintf(out, "thread %lu:\n", entry.th32ThreadID);
+            for (size_t i = 0; i < count; ++i)
+            {
+                std::fprintf(out, "  %s\n", symbolOf(frames[i]).c_str());
+            }
+        }
+        CloseHandle(snapshot);
+        std::fclose(out);
+        std::cout << "[vp2s] host frame loop stalled: thread stacks written to vp2s_hang.txt" << std::endl;
+    }
+
+    // Stack overflow: the faulting thread has almost no stack left, so it hands its context to
+    // this thread and blocks while its stack is walked.
+    CONTEXT g_overflowContext;
+    HANDLE g_overflowEvent = nullptr;
+    HANDLE g_overflowDone = nullptr;
+    uint64_t g_overflowFrames[100000];
+
+    LONG CALLBACK overflowHandler(EXCEPTION_POINTERS *info)
+    {
+        if (info->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW)
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        g_overflowContext = *info->ContextRecord;
+        SetEvent(g_overflowEvent);
+        WaitForSingleObject(g_overflowDone, 30000);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    void overflowWatchMain()
+    {
+        WaitForSingleObject(g_overflowEvent, INFINITE);
+        const size_t count = unwindStack(g_overflowContext, g_overflowFrames, std::size(g_overflowFrames));
+        if (FILE *out = std::fopen("vp2s_hang.txt", "a"))
+        {
+            ensureSymbols();
+            std::fprintf(out, "=== host stack overflow: %zu frames (innermost first) ===\n", count);
+            std::unordered_map<std::string, uint64_t> histogram;
+            for (size_t i = 0; i < count; ++i)
+            {
+                const std::string name = symbolOf(g_overflowFrames[i]);
+                ++histogram[name];
+                if (i < 60 || i + 60 >= count)
+                {
+                    std::fprintf(out, "  #%zu %s\n", i, name.c_str());
+                }
+                else if (i == 60)
+                {
+                    std::fprintf(out, "  ...\n");
+                }
+            }
+            std::vector<std::pair<std::string, uint64_t>> sorted(histogram.begin(), histogram.end());
+            std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+            std::fprintf(out, "most frequent frames:\n");
+            for (size_t i = 0; i < sorted.size() && i < 30; ++i)
+            {
+                std::fprintf(out, "  %llu x %s\n", static_cast<unsigned long long>(sorted[i].second), sorted[i].first.c_str());
+            }
+            std::fclose(out);
+        }
+        SetEvent(g_overflowDone);
+    }
+
+    void hangWatchMain(const std::atomic<uint64_t> *heartbeat, unsigned limitSeconds)
+    {
+        uint64_t last = heartbeat->load();
+        unsigned stalled = 0;
+        for (;;)
+        {
+            Sleep(1000);
+            const uint64_t now = heartbeat->load();
+            stalled = (now == last) ? stalled + 1u : 0u;
+            last = now;
+            if (stalled == limitSeconds)
+            {
+                dumpAllThreads(stalled);
+            }
         }
     }
 
@@ -276,6 +406,22 @@ void startProfiler()
     std::thread(samplerMain, static_cast<unsigned>(std::atoi(value))).detach();
 }
 
+void startHangWatch(const std::atomic<uint64_t> &heartbeat)
+{
+    const char *value = std::getenv("VP2S_HANG_DUMP");
+    if (!value || std::atoi(value) <= 0)
+    {
+        return;
+    }
+    std::thread(hangWatchMain, &heartbeat, static_cast<unsigned>(std::atoi(value))).detach();
+    g_overflowEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    g_overflowDone = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    std::thread(overflowWatchMain).detach();
+    AddVectoredExceptionHandler(1, overflowHandler);
+}
+
 #else
+#include <atomic>
 void startProfiler() {}
+void startHangWatch(const std::atomic<uint64_t> &) {}
 #endif

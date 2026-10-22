@@ -18,6 +18,7 @@
 #include "runtime/gs/gs_cpu_backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -30,10 +31,12 @@
 void printIopDiagnostics(PS2Runtime &runtime); // vp2s_diag_iop.cpp
 void printGsDiagnostics(PS2Runtime &runtime);  // vp2s_diag_gs.cpp
 void startProfiler();                          // vp2s_profile.cpp
+void startHangWatch(const std::atomic<uint64_t> &heartbeat); // vp2s_profile.cpp
 
 namespace
 {
     constexpr int kDiagIntervalFrames = 300; // 5 s at 60 fps
+    std::atomic<uint64_t> g_hostFrames{0};   // heartbeat for VP2S_HANG_DUMP
 
     // Overlay slots of the game (slot table at 0x1c8a30 in the ELF, docs/AUDIT.md).
     struct Slot
@@ -123,6 +126,7 @@ namespace
     void drawDiagnostics(PS2Runtime &runtime, void *userData)
     {
         auto &diag = *static_cast<Diagnostics *>(userData);
+        g_hostFrames.fetch_add(1, std::memory_order_relaxed);
 #if defined(PS2X_ENABLE_DEBUG_UI)
         diag.panel.draw(runtime);
 #endif
@@ -374,6 +378,7 @@ int main(int argc, char *argv[])
         const char *catchUp = std::getenv("VP2S_WALLCLOCK_CATCHUP");
         runtime.eeScheduler().setWallClockCatchUp(catchUp && std::strcmp(catchUp, "0") != 0);
         startProfiler();
+        startHangWatch(g_hostFrames);
         runtime.run();
         std::cout.flush();
         std::cerr.flush();

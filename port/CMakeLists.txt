@@ -84,6 +84,10 @@ if(MSVC)
     # Public symbols in vp2s.pdb (no /Zi needed) for the VP2S_PROFILE sampler: only relinks.
     target_link_options(vp2s PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO)
     target_link_libraries(vp2s PRIVATE dbghelp winmm)
+    # Large recompiled functions get huge MSVC frames (up to ~550 KB: one stack slot per SIMD
+    # temporary), and guest calls nest as host calls on the game thread. With the default 1 MB
+    # the field module overflowed the stack. Reserve 256 MB per thread (committed on demand).
+    target_link_options(vp2s PRIVATE /STACK:268435456)
 endif()
 
 # Unity groups by input and guest address range (generated file names end with _0x<address>):
