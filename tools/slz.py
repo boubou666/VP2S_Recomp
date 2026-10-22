@@ -11,13 +11,28 @@ Chunk header (16 bytes, little endian):
   0x0 magic 'SLZ' (or 'SLE' = encrypted payload)   0x3 type (u8)
   0x4 compressed size   0x8 decompressed size   0xC offset to next chunk (0 = last)
 """
+import os
+import pathlib
 import struct
 
 HEADER = struct.Struct("<3sBIII")
 
-# Recovered by frequency analysis of the two SLE chunks (LBA 255055, 900723) and
-# validated by exact-size decompression of both; the game reads it from 0x1d5930.
-SLE_KEY = None  # not distributed, see tools/README.md
+KEY_FILE = pathlib.Path(__file__).resolve().parent.parent / "build" / "sle_key.txt"
+
+
+def load_sle_key() -> bytes | None:
+    """The 16-byte SLE key is not distributed: VP2S_SLE_KEY or build/sle_key.txt (32 hex digits).
+
+    The game computes it at boot on VU0 and keeps it at 0x1d5930 (docs/RECOMPILER.md); it can
+    also be recovered by frequency analysis of the two SLE chunks (LBA 255055, 900723), checked
+    by exact-size decompression of both.
+    """
+    text = os.environ.get("VP2S_SLE_KEY") or (KEY_FILE.read_text() if KEY_FILE.is_file() else "")
+    text = text.strip()
+    return bytes.fromhex(text) if text else None
+
+
+SLE_KEY = load_sle_key()
 
 
 class SlzError(Exception):
@@ -138,7 +153,7 @@ def decompress_chunk(buf: bytes, off: int = 0, key: bytes | None = None, peek: i
     payload = buf[off + 16:off + 16 + comp]
     if magic == b"SLE":
         if key is None:
-            raise SlzError("SLE chunk needs the 16-byte key")
+            raise SlzError("SLE chunk needs the 16-byte key: set VP2S_SLE_KEY or write build/sle_key.txt")
         payload = decrypt_sle(payload, key)
     if typ == 0:
         data = payload[:decomp]

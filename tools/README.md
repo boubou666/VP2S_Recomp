@@ -71,6 +71,6 @@ Enveloppe un module extrait dans un ELF R5900 minimal, chargé à son adresse, a
 
 ## `slz.py` — compression SLZ / chiffrement SLE
 
-Bibliothèque utilisée par l'extracteur : SLZ types 0 à 3, déchiffrement SLE (la clé est incluse), lecture des chaînes de blocs. Les formats sont décrits dans `docs/AUDIT.md`, sections 7.1 à 7.3.
+Bibliothèque utilisée par l'extracteur : SLZ types 0 à 3, déchiffrement SLE (la clé n'est pas fournie : variable `VP2S_SLE_KEY` ou fichier `build/sle_key.txt`, 32 chiffres hexadécimaux ; voir `load_sle_key`), lecture des chaînes de blocs. Les formats sont décrits dans `docs/AUDIT.md`, sections 7.1 à 7.3.
 
 > `out/`, `work/` et `extracted/` contiennent des données du jeu : ne jamais les versionner ni les redistribuer.
