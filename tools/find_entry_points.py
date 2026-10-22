@@ -8,8 +8,9 @@ each input image for code pointers:
 and keeps targets that look like a function start: an `addiu sp,sp,-N` prologue, or the
 instruction after the previous function's end (`jr ra`, `j` or `b`, its delay slot and
 any zero alignment padding). Every target of a module's constructor table (header
-+0x18..+0x1c) is kept as is, and so is every jal from a module into the code of the main
-ELF or of another module (Ghidra analyzes each input alone and never sees those calls).
++0x18..+0x1c) is kept as is, and so is every jal from one input into the code of another
+(a module into the main ELF or another module, the main ELF into the resident core module):
+Ghidra analyzes each input alone and never sees those calls.
 The jal of every new entry are then followed, up to its first jr ra, until nothing new
 appears. The boot ELF's single section also holds data, so its guessed pointers must land in
 the blocks where Ghidra found functions. Pointers into the middle of a function (switch
@@ -98,9 +99,10 @@ class Image:
         return not self.load <= (first or 0) < self.load + len(self.bytes)
 
     def call_targets(self) -> set[int]:
-        """Targets of the jal instructions in this image's code."""
+        """Targets of the jal instructions in this image's code (the narrowed code blocks for the
+        main ELF, whose single section also holds data)."""
         targets = set()
-        for lo, hi in self.sections:
+        for lo, hi in self.code:
             for addr in range(lo, hi, 4):
                 w = self.word(addr)
                 if w is not None and w >> 26 == 0x03:  # jal
@@ -172,15 +174,16 @@ def find_entry_points(images: dict[str, Image], csvs: dict[str, Path]) -> dict[s
                 target = image.word(slot)
                 if target and image.in_code(target) and target not in known.get(name, set()):
                     result[name].add(target)
-            # Routines of the main ELF or of another module (e.g. the resident core) called only
-            # from this overlay: Ghidra analyzes each input alone and never sees those calls.
-            # A jal target is a function entry whatever its shape.
-            for target in image.call_targets():
-                if image.in_section(target):
-                    continue
-                for owner, candidate in images.items():
-                    if candidate.load != image.load and candidate.in_section(target) and target not in known.get(owner, set()):
-                        result[owner].add(target)
+        # Routines of another input called only from this one: an overlay calling the main ELF
+        # or another module, or the main ELF calling into the resident core module (VP2's main
+        # ELF calls 0x248dc0 in module 1). Ghidra analyzes each input alone and never sees those
+        # calls. A jal target is a function entry whatever its shape.
+        for target in image.call_targets():
+            if image.in_section(target):
+                continue
+            for owner, candidate in images.items():
+                if candidate.load != image.load and candidate.in_section(target) and target not in known.get(owner, set()):
+                    result[owner].add(target)
         for target in image.pointers():
             if image.looks_like_function_start(target):
                 owners = [name]
