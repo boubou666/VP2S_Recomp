@@ -1,260 +1,260 @@
-# Audit de faisabilité — port natif PC de Valkyrie Profile 2 : Silmeria
+# Feasibility audit — native PC port of Valkyrie Profile 2: Silmeria
 
-Version analysée : **SLES-54645** (PAL, France), ISO de 4,35 Go. Audit du 2026-10-20 (phases 1 et 2).
+Version analyzed: **SLES-54645** (PAL, France), 4.35 GB ISO. Audit dated 2026-10-20 (phases 1 and 2).
 
 ## Verdict
 
-**GO pour une recompilation statique, sous conditions** (décision de fin de phase 2, voir section 8).
+**GO for static recompilation, with conditions** (end-of-phase-2 decision, see section 8).
 
-La phase 1 n'avait trouvé rien de bloquant. La phase 2 a levé les principales inconnues :
-- la compression **SLZ** (4 types) est réimplémentée et validée ;
-- le chiffrement **SLE** est cassé : la clé est récupérée et validée ;
-- le format d'overlay **`MWo3`** (Metrowerks CodeWarrior) est décodé ;
-- **≈ 3,3 Mo de code** (≈ 7 600 fonctions) sont extraits et se désassemblent proprement.
+Phase 1 found nothing blocking. Phase 2 resolved the main unknowns:
+- **SLZ** compression (4 types) is reimplemented and validated;
+- **SLE** encryption is broken: the key is recovered and validated;
+- the **`MWo3`** overlay format (Metrowerks CodeWarrior) is decoded;
+- **≈ 3.3 MB of code** (≈ 7,600 functions) is extracted and disassembles cleanly.
 
-Les emplacements du « mode B » (combat ?) déclarés dans l'ELF sont **introuvables sur le disque**, quelle que soit la méthode statique employée. Ce sont probablement des vestiges de l'éditeur de liens, mais seule une capture mémoire pendant un combat peut le confirmer (section 7.6).
+The "mode B" slots (combat?) declared in the ELF **cannot be found on the disc**, whatever static method is used. They are probably linker leftovers, but only a memory capture during a battle can confirm this (section 7.6).
 
-## 1. Structure du disque
+## 1. Disc layout
 
-| Zone (LBA) | Taille | Contenu |
+| Area (LBA) | Size | Contents |
 |---|---|---|
-| 0–820 | 1,6 Mo | Système de fichiers ISO9660 : `SLES_546.45` (exécutable), `IOPRP300.IMG` (modules IOP), `SYSTEM.CNF` |
-| 1024–1041 | 36 Ko | Données à haute entropie : **probablement la table des fichiers** (chiffrée ou compressée) |
-| 1042–254993 | ≈ 500 Mo | Zéros (remplissage pour placer les données vers l'extérieur du DVD) |
-| 254994–2279407 | ≈ 4,1 Go | **Archive cachée**, invisible pour ISO9660, lue par secteurs bruts |
+| 0–820 | 1.6 MB | ISO9660 file system: `SLES_546.45` (executable), `IOPRP300.IMG` (IOP modules), `SYSTEM.CNF` |
+| 1024–1041 | 36 KB | High-entropy data: **probably the file table** (encrypted or compressed) |
+| 1042–254993 | ≈ 500 MB | Zeros (padding to place data toward the outer edge of the DVD) |
+| 254994–2279407 | ≈ 4.1 GB | **Hidden archive**, invisible to ISO9660, read as raw sectors |
 
-Contenu identifié dans l'archive :
-- **Compression SLZ de tri-Ace** (`SLZ` + type 0 à 3 + taille compressée + taille décompressée + suivant). Le premier bloc est le module IOP `sio2man` compressé. Seuls 82 blocs SLZ démarrent sur une frontière de secteur ; les autres fichiers sont dans des **conteneurs** non alignés.
-- Tables de blocs `ANIM` / `CHAR` (FourCC en little-endian) : animations et personnages.
-- `SEQW` (1 825 occurrences) et `spcm` (100) : probablement les voix et la musique en streaming.
-- Deux grandes zones à entropie de 8,0 (≈ 1,3 Go au début, et la fin du disque) : probablement les **vidéos FMV**, dans un conteneur non standard (aucun en-tête MPEG-PS trouvé).
+Contents identified in the archive:
+- **tri-Ace SLZ compression** (`SLZ` + type 0 to 3 + compressed size + decompressed size + next). The first block is the compressed `sio2man` IOP module. Only 82 SLZ blocks start on a sector boundary; the other files are inside unaligned **containers**.
+- `ANIM` / `CHAR` block tables (little-endian FourCC): animations and characters.
+- `SEQW` (1,825 occurrences) and `spcm` (100): probably streamed voices and music.
+- Two large areas with entropy 8.0 (≈ 1.3 GB at the start, and the end of the disc): probably the **FMVs**, in a non-standard container (no MPEG-PS header found).
 
-## 2. Exécutable principal (`SLES_546.45`)
+## 2. Main executable (`SLES_546.45`)
 
-- ELF MIPS R5900 (Emotion Engine), point d'entrée `0x100008`, segment principal de 822 Ko (`0x100000`–`0x1e7d80`).
-- **Aucun symbole** : table des symboles vide et noms de sections effacés.
-- Ghidra 12.1.4 + plugin EE : **972 fonctions**, ≈ 67 000 instructions.
-- Peu d'instructions spécifiques à la PS2 : **24 VU0 macro**, **110 MMI** (128 bits), 1 947 `lq`/`sq`, 1 253 FPU.
-- Bibliothèques **Sony SDK 3.0** identifiées : libcdvd, libdma, libgraph (3.0.1), libkernl, libmc, libpad2, libdbc, sifrpc, stdio. Elles sont standard, donc remplaçables par une implémentation PC (HLE) au lieu d'être recompilées.
+- MIPS R5900 ELF (Emotion Engine), entry point `0x100008`, 822 KB main segment (`0x100000`–`0x1e7d80`).
+- **No symbols**: empty symbol table and section names stripped.
+- Ghidra 12.1.4 + EE plugin: **972 functions**, ≈ 67,000 instructions.
+- Few PS2-specific instructions: **24 VU0 macro**, **110 MMI** (128-bit), 1,947 `lq`/`sq`, 1,253 FPU.
+- **Sony SDK 3.0** libraries identified: libcdvd, libdma, libgraph (3.0.1), libkernl, libmc, libpad2, libdbc, sifrpc, stdio. They are standard, so they can be replaced by a PC implementation (HLE) instead of being recompiled.
 
-Fonctions clés repérées :
+Key functions identified:
 
-| Adresse | Rôle |
+| Address | Role |
 |---|---|
-| `FUN_00119a60` (8 Ko, la plus grosse) | **Installateur sur disque dur** (corrigé en phase 2) : crée la partition `PP.SLES-54645` et y écrit `vp2.bin` via fileXio. Ce n'est pas la couche de lecture. |
-| `FUN_00100230` | Démarrage de l'IOP (`cdrom0:\IOPRP300.IMG;1`) |
-| `FUN_001025d0` | Point d'entrée SLZ : signature `SLZ`/`SLE`, déchiffrement, choix du type, chaînage des blocs |
-| `FUN_00101ea0` / `FUN_001018d0` / `FUN_00101370` | Décompresseurs SLZ de type 1 / 2 / 3 |
-| `FUN_00102360`, `FUN_001059b0` | Déchiffrement SLE, ouverture de flux SLZ |
+| `FUN_00119a60` (8 KB, the largest) | **Hard disk installer** (corrected in phase 2): creates the `PP.SLES-54645` partition and writes `vp2.bin` to it via fileXio. It is not the read layer. |
+| `FUN_00100230` | IOP boot (`cdrom0:\IOPRP300.IMG;1`) |
+| `FUN_001025d0` | SLZ entry point: `SLZ`/`SLE` signature, decryption, type selection, block chaining |
+| `FUN_00101ea0` / `FUN_001018d0` / `FUN_00101370` | SLZ type 1 / 2 / 3 decompressors |
+| `FUN_00102360`, `FUN_001059b0` | SLE decryption, SLZ stream opening |
 
-Le jeu **sait lire toutes ses données depuis un seul fichier `vp2.bin`** (installation sur le disque dur PS2). L'archive cachée du DVD est donc, en pratique, ce même `vp2.bin`. C'est très favorable pour le port.
+The game **can read all of its data from a single `vp2.bin` file** (PS2 hard disk installation). The hidden archive on the DVD is therefore, in practice, that same `vp2.bin`. This is very favorable for the port.
 
 ## 3. Overlays
 
-365 segments de taille nulle dans le fichier, répartis sur 20 emplacements mémoire (≈ 7 Mo cumulés). Leur contenu est chargé depuis l'archive à l'exécution.
+365 zero-size segments in the file, spread over 20 memory slots (≈ 7 MB in total). Their contents are loaded from the archive at run time.
 
-| Emplacement | Nombre | Taille max | Remarque |
+| Slot | Count | Max size | Note |
 |---|---|---|---|
-| `0x1e7d80`, `0x35ec80`, `0x36d800` | 1 + 3 + 1 | 1,2–1,7 Mo | Probablement des tampons ou tas, pas du code |
-| `0x48ea00`, `0x495000` | 10 + 12 | 26–105 Ko | Modules de jeu (scènes, systèmes) ? |
-| `0x514100` | 21 | 60 Ko | idem |
-| `0x523280` … `0x52e680` | **4 × 15** | 15 Ko | Emplacements parallèles identiques |
-| `0x532280` | 57 | 33 Ko | |
-| `0x53a400`, `0x53d880` | **2 × 45** | 13 Ko | Emplacements parallèles identiques |
-| `0x540d00` | 12 | 7,5 Ko | |
-| `0x542b00` … `0x547780` | **4 × 24** | 6,5 Ko | Emplacements parallèles identiques |
+| `0x1e7d80`, `0x35ec80`, `0x36d800` | 1 + 3 + 1 | 1.2–1.7 MB | Probably buffers or heaps, not code |
+| `0x48ea00`, `0x495000` | 10 + 12 | 26–105 KB | Game modules (scenes, systems)? |
+| `0x514100` | 21 | 60 KB | same |
+| `0x523280` … `0x52e680` | **4 × 15** | 15 KB | Identical parallel slots |
+| `0x532280` | 57 | 33 KB | |
+| `0x53a400`, `0x53d880` | **2 × 45** | 13 KB | Identical parallel slots |
+| `0x540d00` | 12 | 7.5 KB | |
+| `0x542b00` … `0x547780` | **4 × 24** | 6.5 KB | Identical parallel slots |
 
-**Hypothèse à vérifier** : les groupes de 4 emplacements identiques correspondent aux 4 membres d'équipe en combat, et les groupes de 2 aux ennemis (modules d'action et d'IA chargés en parallèle).
+**Hypothesis to verify**: the groups of 4 identical slots correspond to the 4 party members in battle, and the groups of 2 to enemies (action and AI modules loaded in parallel).
 
-Conséquence pour une recompilation statique : chaque overlay doit être extrait, décompressé, puis recompilé **pour son adresse de chargement**. Le runtime doit aussi savoir lequel est résident dans chaque emplacement pour dispatcher les appels.
+Consequence for static recompilation: each overlay must be extracted, decompressed, then recompiled **for its load address**. The runtime must also know which one is resident in each slot in order to dispatch calls.
 
-## 4. Microcode VU
+## 4. VU microcode
 
-Dans l'exécutable principal :
-- **un programme VU1 principal d'environ 1 150 instructions** (≈ 9 Ko), envoyé en 5 commandes VIF `MPG` (de `0x14a294` à `0x14c6a8`) vers les adresses VU `0x0dc`–`0x55a`. C'est probablement le moteur de rendu 3D ;
-- une mini-routine de 11 instructions (`0x145d14`).
+In the main executable:
+- **one main VU1 program of about 1,150 instructions** (≈ 9 KB), sent in 5 VIF `MPG` commands (from `0x14a294` to `0x14c6a8`) to VU addresses `0x0dc`–`0x55a`. This is probably the 3D rendering engine;
+- an 11-instruction mini-routine (`0x145d14`).
 
-Cette taille reste **gérable** : on peut d'abord l'interpréter, puis le traduire à la main en shader ou en C. Les overlays peuvent contenir d'autres programmes VU (effets de combat, par exemple), à vérifier.
+This size remains **manageable**: it can first be interpreted, then hand-translated into a shader or C. The overlays may contain other VU programs (battle effects, for example); to be checked.
 
-## 5. Points favorables et défavorables
+## 5. Strengths and weaknesses
 
-**Favorables**
-- SDK Sony standard (3.0), reconnaissable par signature et remplaçable en HLE.
-- Données **compressées** (SLZ est le format du moteur tri-Ace partagé avec Star Ocean 3). *Phase 2 : seul le code est chiffré (SLE), et le chiffrement est cassé.*
-- Couche d'accès aux fichiers centralisée (`vp2.bin`).
-- Microcode VU1 de taille raisonnable dans l'exécutable.
-- Peu de MMI et de VU0 dans l'exécutable principal.
-- Ghidra et le plugin EE reconnaissent le binaire automatiquement.
+**Strengths**
+- Standard Sony SDK (3.0), recognizable by signature and replaceable with HLE.
+- **Compressed** data (SLZ is the format of the tri-Ace engine shared with Star Ocean 3). *Phase 2: only the code is encrypted (SLE), and the encryption is broken.*
+- Centralized file access layer (`vp2.bin`).
+- Reasonably sized VU1 microcode in the executable.
+- Little MMI and VU0 in the main executable.
+- Ghidra and the EE plugin recognize the binary automatically.
 
-**Défavorables**
-- Aucun symbole.
-- L'essentiel du code de jeu est dans ≈ 365 overlays **pas encore extraits** : la vraie taille du code reste inconnue.
-- Table des fichiers (LBA 1024) non décodée, possiblement chiffrée.
-- Formats propriétaires : conteneurs, `SEQW`, `spcm`, FMV.
-- Modules IOP maison (pilote son…) à réimplémenter en HLE.
-- Aucun projet communautaire existant (décompilation ou recomp) sur lequel s'appuyer.
+**Weaknesses**
+- No symbols.
+- Most of the game code is in ≈ 365 overlays **not yet extracted**: the real code size remains unknown.
+- File table (LBA 1024) not decoded, possibly encrypted.
+- Proprietary formats: containers, `SEQW`, `spcm`, FMV.
+- Custom IOP modules (sound driver…) to reimplement with HLE.
+- No existing community project (decompilation or recomp) to build on.
 
-## 6. Stratégie recommandée
+## 6. Recommended strategy
 
-1. **Recompilation statique de l'EE** : exécutable principal + chaque overlay à son adresse, traduits de MIPS R5900 vers C.
-2. **HLE du SDK** : libcdvd, libpad2, libmc et libgraph réimplémentées pour PC ; la couche `FUN_00119a60` est redirigée vers `vp2.bin` extrait de l'ISO.
-3. **Graphismes** : une couche d'émulation du GS d'abord (pour obtenir une image), puis un rendu natif.
-4. **VU1** : interpréteur VU au départ, traduction ensuite.
-5. **IOP / audio** : HLE des modules son à partir de leurs commandes RPC.
+1. **Static recompilation of the EE**: main executable + each overlay at its address, translated from MIPS R5900 to C.
+2. **SDK HLE**: libcdvd, libpad2, libmc and libgraph reimplemented for PC; the `FUN_00119a60` layer is redirected to `vp2.bin` extracted from the ISO.
+3. **Graphics**: a GS emulation layer first (to get an image), then a native renderer.
+4. **VU1**: VU interpreter at first, translation later.
+5. **IOP / audio**: HLE of the sound modules based on their RPC commands.
 
-Premier jalon visé : **l'écran titre affiché nativement**.
+First target milestone: **the title screen displayed natively**.
 
-Ordre de grandeur, sous réserve de la phase 2 : **6 à 18 mois et plus** de travail itératif à temps partiel, avec des tests à chaque étape.
+Order of magnitude, pending phase 2: **6 to 18+ months** of iterative part-time work, with testing at every step.
 
-## 7. Phase 2 — résultats
+## 7. Phase 2 — results
 
-### 7.1 Compression SLZ
+### 7.1 SLZ compression
 
-Réimplémentée dans `tools/slz.py` à partir des routines du jeu. Ce sont des variantes de LZSS : un octet ou un mot de drapeaux, des références avec une distance sur 12 bits et une longueur sur 4 bits.
+Reimplemented in `tools/slz.py` from the game's routines. These are LZSS variants: a flag byte or word, references with a 12-bit distance and a 4-bit length.
 
-| Type | Algorithme | Fin du flux |
+| Type | Algorithm | End of stream |
 |---|---|---|
-| 0 | stocké | taille |
-| 1 | LZSS sur octets | distance 0 |
-| 2 | LZSS sur octets + RLE (longueur 0xF = remplissage) | taille décompressée |
-| 3 | LZSS sur mots de 16 bits (longueur + 2 mots) | distance 0 |
+| 0 | stored | size |
+| 1 | byte LZSS | distance 0 |
+| 2 | byte LZSS + RLE (length 0xF = fill) | decompressed size |
+| 3 | 16-bit word LZSS (length + 2 words) | distance 0 |
 
-Validation : les 82 blocs alignés sur un secteur se décompressent à la taille exacte de leur en-tête. Sur tout le disque, **25 558 fichiers** (1,6 Go compressés, **2,72 Gio décompressés**) passent, avec seulement 2 échecs.
+Validation: the 82 sector-aligned blocks decompress to the exact size in their header. Across the whole disc, **25,558 files** (1.6 GB compressed, **2.72 GiB decompressed**) pass, with only 2 failures.
 
-### 7.2 Chiffrement SLE
+### 7.2 SLE encryption
 
-`SLE` est un bloc SLZ dont la charge utile est chiffrée : `p = (c - k) XOR clé[i % 16]`, où `k = 3, 6, 9…` (modulo 256).
+`SLE` is an SLZ block whose payload is encrypted: `p = (c - k) XOR key[i % 16]`, where `k = 3, 6, 9…` (modulo 256).
 
-La clé (16 octets, lue par le jeu à `0x1d5930`, en BSS, posée à l'exécution) a été **récupérée par analyse de fréquences** sur les deux blocs SLE alignés. Elle a été validée par décompression à la taille exacte de ces deux blocs, puis des 125 autres. La clé est dans `tools/slz.py`.
+The key (16 bytes, read by the game at `0x1d5930`, in BSS, set at run time) was **recovered by frequency analysis** on the two aligned SLE blocks. It was validated by decompressing to the exact size of these two blocks, then of the 125 others. The key is in `tools/slz.py`.
 
-**Seul le code est chiffré** : les 127 blocs SLE sont tous des modules ou des overlays.
+**Only the code is encrypted**: all 127 SLE blocks are modules or overlays.
 
-La zone de la LBA 1024 (36 Ko) n'utilise pas ce chiffrement. *Mise à jour (premier démarrage du portage) : c'est bien la **table des fichiers**, chiffrée autrement.* Au démarrage, `FUN_0011ebc0` la lit (LBA `0x400`, 0x9000 octets) via le gestionnaire CD (`0x1ca440`), puis la déchiffre par XOR avec un flux pseudo-aléatoire de type xorshift, initialisé par la constante `0x49287491`, sur trois bandes de 0x3000 octets. Ce chiffrement reste à réimplémenter pour lire la table hors du jeu.
+The LBA 1024 area (36 KB) does not use this encryption. *Update (first boot of the port): it is indeed the **file table**, encrypted differently.* At startup, `FUN_0011ebc0` reads it (LBA `0x400`, 0x9000 bytes) through the CD manager (`0x1ca440`), then decrypts it by XOR with an xorshift-style pseudo-random stream, seeded with the constant `0x49287491`, over three 0x3000-byte bands. This encryption still has to be reimplemented to read the table outside the game.
 
-### 7.3 Modules et overlays
+### 7.3 Modules and overlays
 
-En-tête commun (0x80 octets), avec l'adresse et les tailles aux mêmes positions :
-`[0]` 0 ou `'MWo3'` · `[1]` identifiant · `[2]` adresse de chargement · `[3]` taille du code (en-tête compris) · `[4]` taille des données · `[5]` taille du BSS · `[6..7]` début et fin de la table des constructeurs C++ · `[0x20..]` **nom du fichier d'origine** (`MWo3` seulement).
+Common header (0x80 bytes), with the address and sizes at the same positions:
+`[0]` 0 or `'MWo3'` · `[1]` identifier · `[2]` load address · `[3]` code size (header included) · `[4]` data size · `[5]` BSS size · `[6..7]` start and end of the C++ constructor table · `[0x20..]` **original file name** (`MWo3` only).
 
-**L'en-tête reste en mémoire à l'adresse de l'emplacement, et le code commence à `emplacement + 0x80`.** Ça a été vérifié par les cibles `jal` internes du module 3 : 2 261 sur 3 523 tombent sur un prologue avec cette base, contre 138 sans en-tête. `FUN_001210a0` lit ensuite l'en-tête en mémoire : il efface le BSS (`+0x14`) et appelle les constructeurs (`+0x18`..`+0x1c`).
+**The header stays in memory at the slot address, and the code starts at `slot + 0x80`.** This was verified with the internal `jal` targets of module 3: 2,261 out of 3,523 land on a prologue with this base, versus 138 without the header. `FUN_001210a0` then reads the header in memory: it clears the BSS (`+0x14`) and calls the constructors (`+0x18`..`+0x1c`).
 
-`MWo3` correspond très probablement au format d'overlay de **Metrowerks CodeWarrior** : le jeu serait compilé avec CodeWarrior, pas avec GCC.
+`MWo3` very likely corresponds to the **Metrowerks CodeWarrior** overlay format: the game would be compiled with CodeWarrior, not with GCC.
 
-Les modules sont des **morceaux de chaînes SLZ** : `FUN_00102ac0` renvoie le n-ième bloc d'une chaîne. La **table des emplacements** est à `0x1c8a30` dans l'ELF : 21 adresses, indexées par numéro d'emplacement. Elle est utilisée par les méthodes virtuelles `FUN_00100e70` / `FUN_00100f60` (classe « chargeur », vtable vers `0x1a4a1c`) et par `FUN_00410cc0` (module 3, emplacements 3 et 4).
+The modules are **pieces of SLZ chains**: `FUN_00102ac0` returns the n-th block of a chain. The **slot table** is at `0x1c8a30` in the ELF: 21 addresses, indexed by slot number. It is used by the virtual methods `FUN_00100e70` / `FUN_00100f60` ("loader" class, vtable at `0x1a4a1c`) and by `FUN_00410cc0` (module 3, slots 3 and 4).
 
-Les petits overlays de scène sont des entrées **`GRP`** de **conteneurs à répertoire**. Format du conteneur (lu par `FUN_00422c80`) : `+0x4` = nombre d'entrées, puis des entrées de 16 octets à partir de `+0x10` (étiquette, paramètre, taille, décalage). Étiquettes vues : `ANIM`, `CHAR`, `SIG`, `ATRC`, `GRP`, `FACE`, `SYS`, `DCMS`, `ECS`, `ESM`, `FISP`, `AAM`, `APAM`, `PAMM`, `MRTA`, `PAM`.
+The small scene overlays are **`GRP`** entries of **directory containers**. Container format (read by `FUN_00422c80`): `+0x4` = number of entries, then 16-byte entries starting at `+0x10` (tag, parameter, size, offset). Tags seen: `ANIM`, `CHAR`, `SIG`, `ATRC`, `GRP`, `FACE`, `SYS`, `DCMS`, `ECS`, `ESM`, `FISP`, `AAM`, `APAM`, `PAMM`, `MRTA`, `PAM`.
 
-| N° | Emplacement | Déclarés (ELF) | Trouvés | Code | Contenu |
+| No. | Slot | Declared (ELF) | Found | Code | Contents |
 |---|---|---|---|---|---|
-| 1 | `0x1e7d80` | 1 | **1** | 1 200 Ko | **module 1 : socle résident** (chargé avec le titre ; contient libmpeg/libipu, le décodeur vidéo) |
-| 2 / 6 | `0x35ec80` | 3 | 2 | 1 254 Ko | module 2 (titre / carte mémoire) ; **module 3, moteur d'exploration** (portes, caméras, physique) |
-| 3 | `0x48ea00` | 10 | **10** | 78 Ko | scènes : `SPWorldMap.bin`, `SPStaffRoll.bin`, `SPDragonHall.bin`… |
-| 4 | `0x495000` | 12 | **12** | 550 Ko | camp : `CampEquip.ovl`, `CampParty.ovl`, `CampSaveLoad.ovl`… |
-| 5, 7–20 | `0x4aea80`, `0x36d800`, `0x514100`…`0x547780` | 1 + 1 + 336 | **0** | — | « mode B », voir 7.6 |
+| 1 | `0x1e7d80` | 1 | **1** | 1,200 KB | **module 1: resident core** (loaded with the title; contains libmpeg/libipu, the video decoder) |
+| 2 / 6 | `0x35ec80` | 3 | 2 | 1,254 KB | module 2 (title / memory card); **module 3, exploration engine** (doors, cameras, physics) |
+| 3 | `0x48ea00` | 10 | **10** | 78 KB | scenes: `SPWorldMap.bin`, `SPStaffRoll.bin`, `SPDragonHall.bin`… |
+| 4 | `0x495000` | 12 | **12** | 550 KB | camp: `CampEquip.ovl`, `CampParty.ovl`, `CampSaveLoad.ovl`… |
+| 5, 7–20 | `0x4aea80`, `0x36d800`, `0x514100`…`0x547780` | 1 + 1 + 336 | **0** | — | "mode B", see 7.6 |
 
-Les tailles trouvées correspondent **exactement** aux segments déclarés dans l'ELF : taille décompressée + BSS = taille du segment. Les modules sont dupliqués sur le disque (131 occurrences pour 25 uniques), sans doute pour limiter les déplacements de la tête de lecture.
+The sizes found match the segments declared in the ELF **exactly**: decompressed size + BSS = segment size. The modules are duplicated on the disc (131 occurrences for 25 unique ones), probably to reduce read-head seeks.
 
-### 7.4 Mesure du code
+### 7.4 Code measurements
 
-| | Code | Fonctions | VU0 macro | MMI | Microcode VU1 |
+| | Code | Functions | VU0 macro | MMI | VU1 microcode |
 |---|---|---|---|---|---|
-| ELF principal | ≈ 270 Ko | 972 (Ghidra) | 24 | 110 | 1 programme, 1 161 instr. |
-| Module 1 (socle résident) | 1 200 Ko | ≈ 2 000 (estimation) | **9 863** | 1 027 | 3 envois, 709 instr. |
-| Module 3 (exploration) | 1 165 Ko | **3 214 (Ghidra)**, 0 erreur de décompilation | 4 433 | 192 | aucun |
-| Module 2 + scènes + camp | ≈ 720 Ko | ≈ 1 300 (estimation) | ≈ 900 | ≈ 40 | aucun |
-| **Total mesuré** | **≈ 3,3 Mo** | **≈ 7 600** | **≈ 15 200** | **≈ 1 400** | **≈ 1 870 instr.** |
+| Main ELF | ≈ 270 KB | 972 (Ghidra) | 24 | 110 | 1 program, 1,161 instr. |
+| Module 1 (resident core) | 1,200 KB | ≈ 2,000 (estimate) | **9,863** | 1,027 | 3 uploads, 709 instr. |
+| Module 3 (exploration) | 1,165 KB | **3,214 (Ghidra)**, 0 decompilation errors | 4,433 | 192 | none |
+| Module 2 + scenes + camp | ≈ 720 KB | ≈ 1,300 (estimate) | ≈ 900 | ≈ 40 | none |
+| **Total measured** | **≈ 3.3 MB** | **≈ 7,600** | **≈ 15,200** | **≈ 1,400** | **≈ 1,870 instr.** |
 
-Les estimations comptent les prologues `addiu sp,sp,-N` × 1,25 (calibré sur l'ELF : 780 prologues pour 972 fonctions Ghidra). Le module 3 contient aussi **1 782 appels indirects** (`jalr`) : le recompilateur devra dispatcher les pointeurs de fonction à l'exécution.
+The estimates count `addiu sp,sp,-N` prologues × 1.25 (calibrated on the ELF: 780 prologues for 972 Ghidra functions). Module 3 also contains **1,782 indirect calls** (`jalr`): the recompiler will have to dispatch function pointers at run time.
 
-### 7.5 Modules IOP
+### 7.5 IOP modules
 
-| Sony (standard, remplaçables) | tri-Ace (à réimplémenter) |
+| Sony (standard, replaceable) | tri-Ace (to reimplement) |
 |---|---|
-| `sio2man`, `sio2d`, `Dbc_Manager`, `ds2o_d` (DualShock 2), `Sound_Device_Library` (libsd), `mcman`, `mcserv` | `Csm_`, `Csd_`, `Csi_` (≈ 50 Ko au total) : très probablement le **pilote son** |
+| `sio2man`, `sio2d`, `Dbc_Manager`, `ds2o_d` (DualShock 2), `Sound_Device_Library` (libsd), `mcman`, `mcserv` | `Csm_`, `Csd_`, `Csi_` (≈ 50 KB in total): very likely the **sound driver** |
 
-### 7.6 Le « mode B » introuvable
+### 7.6 The missing "mode B"
 
-La table des emplacements décrit deux configurations mémoire :
-- **Mode A (exploration)** : le module 3 à `0x35ec80`, plus les scènes (3) et le camp (4). Tout est trouvé.
-- **Mode B** : un module de `0xe580` à `0x35ec80` (6), puis un module de 1,7 Mo à `0x36d800` (7, juste après : `0x35ec80 + 0xeb80`), puis 13 petits emplacements (8 à 20), dont des groupes parallèles 4×15, 2×45 et 4×24. Plus l'emplacement 5 (`0x4aea80`, 0x100 octets). **Rien n'est trouvé.**
+The slot table describes two memory configurations:
+- **Mode A (exploration)**: module 3 at `0x35ec80`, plus the scenes (3) and the camp (4). Everything is found.
+- **Mode B**: a `0xe580` module at `0x35ec80` (6), then a 1.7 MB module at `0x36d800` (7, right after: `0x35ec80 + 0xeb80`), then 13 small slots (8 to 20), including the parallel groups 4×15, 2×45 and 4×24. Plus slot 5 (`0x4aea80`, 0x100 bytes). **Nothing is found.**
 
-Méthodes employées, toutes négatives :
-1. en-tête de module au premier niveau de chaque morceau de chaîne (25 558 chaînes) ;
-2. code brut sans en-tête (cibles `jal` sur des prologues, à chaque emplacement candidat) ;
-3. en-têtes et blocs SLZ imbriqués dans les données décompressées ;
-4. en-têtes relâchés : adresse du mode B dans n'importe lequel des 8 premiers mots, sur les 25 648 en-têtes SLZ/SLE du disque ;
-5. overlays de données (pointeurs internes vers leur propre plage) ;
-6. en-têtes bruts dans les secteurs non compressés.
+Methods used, all negative:
+1. module header at the top level of each chain piece (25,558 chains);
+2. raw code without a header (`jal` targets on prologues, at each candidate slot);
+3. headers and SLZ blocks nested inside the decompressed data;
+4. relaxed headers: mode B address in any of the first 8 words, across the disc's 25,648 SLZ/SLE headers;
+5. data overlays (internal pointers into their own range);
+6. raw headers in the uncompressed sectors.
 
-De plus, **aucun code extrait n'appelle ces emplacements** (zéro `jal`), et les 128 blocs `SLE` du disque se déchiffrent tous avec la clé connue. Le seul chargeur générique passe par une vtable, avec un numéro calculé à l'exécution.
+In addition, **no extracted code calls these slots** (zero `jal`), and all 128 `SLE` blocks on the disc decrypt with the known key. The only generic loader goes through a vtable, with a number computed at run time.
 
-**Hypothèse la plus probable** : ce sont des déclarations d'overlays restées dans le script de liens (développement, ou ancienne organisation du combat), et le combat est intégré au moteur 3D des modules 1 et 3. **Pour le confirmer** : prendre une sauvegarde d'état PCSX2 **pendant un combat** et lire `eeMemory.bin` aux adresses `0x35ec80`, `0x36d800` et `0x514100`+. On y verra quels modules sont résidents.
+**Most likely hypothesis**: these are overlay declarations left over in the linker script (development, or an earlier organization of the battle system), and battles are integrated into the 3D engine of modules 1 and 3. **To confirm**: take a PCSX2 save state **during a battle** and read `eeMemory.bin` at addresses `0x35ec80`, `0x36d800` and `0x514100`+. This will show which modules are resident.
 
-### 7.7 Vidéos
+### 7.7 Videos
 
-Le module 1 contient **libmpeg/libipu** de Sony (`sceMpegGetPicture`, décodage des macroblocs) : les FMV sont du **MPEG-2** dans un conteneur maison. Sur PC, une bibliothèque standard (FFmpeg) pourra les décoder une fois le conteneur compris.
+Module 1 contains Sony's **libmpeg/libipu** (`sceMpegGetPicture`, macroblock decoding): the FMVs are **MPEG-2** in a custom container. On PC, a standard library (FFmpeg) will be able to decode them once the container is understood.
 
-### 7.8 Outillage
+### 7.8 Tooling
 
-REA 6.7.0 **n'ouvre pas** ce binaire sous Windows : son connecteur Ghidra n'y accepte que les PE et le 6502, et IDA, Kuna et Hopper n'ont pas de voie MIPS. Le travail s'est fait en pilotant Ghidra en headless directement. REA pourrait servir sous Linux (WSL), ce qui reste à tester.
+REA 6.7.0 **does not open** this binary on Windows: its Ghidra connector there only accepts PE and 6502, and IDA, Kuna and Hopper have no MIPS path. The work was done by driving Ghidra headless directly. REA might be usable on Linux (WSL), which remains to be tested.
 
-## 8. Décision go/no-go
+## 8. Go/no-go decision
 
-**GO pour la recompilation statique**, pour ces raisons :
-- volume de code **maîtrisable** (≈ 3,3 Mo mesurés, ≈ 7 600 fonctions) ;
-- désassemblage et décompilation **propres** avec un compilateur unique (CodeWarrior) ;
-- **toutes les couches de stockage du code sont cassées** (SLZ, SLE, MWo3) ;
-- **peu de MMI** (≈ 1 400), **microcode VU1 de taille modeste** (≈ 1 870 instructions au total) ;
-- SDK et modules IOP Sony standard, remplaçables en HLE.
+**GO for static recompilation**, for these reasons:
+- **manageable** code volume (≈ 3.3 MB measured, ≈ 7,600 functions);
+- **clean** disassembly and decompilation with a single compiler (CodeWarrior);
+- **all the code storage layers are broken** (SLZ, SLE, MWo3);
+- **little MMI** (≈ 1,400), **modestly sized VU1 microcode** (≈ 1,870 instructions in total);
+- standard Sony SDK and IOP modules, replaceable with HLE.
 
-Conditions et risques à traiter tôt :
-1. **VU0 en mode macro** (≈ 15 200 instructions, surtout dans le module 1) : le recompilateur doit les traduire (en SSE). C'est un chantier central, pas un détail.
-2. **Appels indirects** (≈ 1 800 dans le module 3, plus les vtables) : il faut une table de dispatch couvrant l'ELF et le module résident de chaque emplacement.
-3. **Mode B introuvable** (section 7.6) : à confirmer par une capture mémoire pendant un combat.
-4. **Pilote son maison** (`Csm_`/`Csd_`/`Csi_`) à réimplémenter à partir de ses commandes RPC.
-5. **Rendu GS** et conteneur **FMV** inconnu.
+Conditions and risks to address early:
+1. **VU0 in macro mode** (≈ 15,200 instructions, mostly in module 1): the recompiler must translate them (to SSE). This is a central work item, not a detail.
+2. **Indirect calls** (≈ 1,800 in module 3, plus the vtables): a dispatch table is needed covering the ELF and the resident module of each slot.
+3. **Missing mode B** (section 7.6): to be confirmed by a memory capture during a battle.
+4. **Custom sound driver** (`Csm_`/`Csd_`/`Csi_`) to reimplement from its RPC commands.
+5. **GS rendering** and unknown **FMV** container.
 
-## 9. Prochaines étapes
+## 9. Next steps
 
-1. **Capture mémoire en combat** (PCSX2, sauvegarde d'état) pour trancher la question du mode B et vérifier quels modules sont résidents.
-2. ~~**Extracteur complet**~~ — **fait** : `tools/extract.py` (voir `tools/README.md`). En 30 s, il sort les 25 modules prêts pour le recompilateur (tous conformes à leur segment ELF), les modules IOP, l'index des 25 558 chaînes et, en option, toutes les données. La disposition exacte de `vp2.bin` (installation sur disque dur) n'est pas reproduite : le port lira l'ISO directement.
-3. ~~**Choisir la base du recompilateur**~~ — **fait** : PS2Recomp, dans un fork avec gestion des overlays par emplacement. Voir `docs/RECOMPILER.md` (l'ELF et le module 3 se recompilent déjà sans erreur).
-4. **HLE minimale** : noyau EE, libcdvd redirigée vers `vp2.bin`, libpad2, et un GS « logiciel » pour voir une image.
-5. **Jalon : l'écran titre** affiché nativement.
+1. **Memory capture in battle** (PCSX2, save state) to settle the mode B question and check which modules are resident.
+2. ~~**Full extractor**~~ — **done**: `tools/extract.py` (see `tools/README.md`). In 30 s, it outputs the 25 recompiler-ready modules (all matching their ELF segment), the IOP modules, the index of the 25,558 chains and, optionally, all the data. The exact layout of `vp2.bin` (hard disk installation) is not reproduced: the port will read the ISO directly.
+3. ~~**Choose the recompiler base**~~ — **done**: PS2Recomp, in a fork with per-slot overlay support. See `docs/RECOMPILER.md` (the ELF and module 3 already recompile without errors).
+4. **Minimal HLE**: EE kernel, libcdvd redirected to `vp2.bin`, libpad2, and a "software" GS to see an image.
+5. **Milestone: the title screen** displayed natively.
 
-## Annexe — environnement et reproduction
+## Appendix — environment and reproduction
 
-| Outil | Emplacement |
+| Tool | Location |
 |---|---|
-| Image Docker `vp2s-toolchain` (7-Zip, binutils MIPS, Python + pyelftools/capstone) | `toolchain/Dockerfile` |
+| Docker image `vp2s-toolchain` (7-Zip, MIPS binutils, Python + pyelftools/capstone) | `toolchain/Dockerfile` |
 | Ghidra 12.1.4 | `D:\Tools\ghidra_12.1.4_PUBLIC` (JDK 21 Temurin via `JAVA_HOME_OVERRIDE`) |
-| Plugin Emotion Engine v2.1.38 | `%APPDATA%\ghidra\ghidra_12.1.4_PUBLIC\Extensions` |
-| REA 6.7.0 (MCP) | enregistré dans `~/.claude.json` (sauvegarde : `.claude.json.rea.backup`) |
-| Projet Ghidra | `ghidra/VP2S.gpr` |
+| Emotion Engine plugin v2.1.38 | `%APPDATA%\ghidra\ghidra_12.1.4_PUBLIC\Extensions` |
+| REA 6.7.0 (MCP) | registered in `~/.claude.json` (backup: `.claude.json.rea.backup`) |
+| Ghidra project | `ghidra/VP2S.gpr` |
 
-Scripts (lancés avec `docker run --rm -v D:\VP2S_Recomp:/work vp2s-toolchain ...`) :
-- `sh /work/scripts/extract_iso.sh` : liste et extrait le système de fichiers ISO dans `extracted/`
-- `sh /work/scripts/elf_overview.sh`, `sh /work/scripts/elf_strings.sh` : en-têtes et chaînes de l'ELF
-- `python3 -I /work/scripts/scan_blob.py` : carte d'entropie de l'archive cachée
-- `python3 -I /work/scripts/extents.py` : zones de données et de zéros
-- `python3 -I /work/scripts/count_slz.py` : blocs SLZ et FourCC
-- `python3 -I /work/scripts/elf_layout.py` : emplacements d'overlays et microcode VU
+Scripts (run with `docker run --rm -v D:\VP2S_Recomp:/work vp2s-toolchain ...`):
+- `sh /work/scripts/extract_iso.sh`: lists and extracts the ISO file system into `extracted/`
+- `sh /work/scripts/elf_overview.sh`, `sh /work/scripts/elf_strings.sh`: ELF headers and strings
+- `python3 -I /work/scripts/scan_blob.py`: entropy map of the hidden archive
+- `python3 -I /work/scripts/extents.py`: data and zero areas
+- `python3 -I /work/scripts/count_slz.py`: SLZ blocks and FourCCs
+- `python3 -I /work/scripts/elf_layout.py`: overlay slots and VU microcode
 
-- `python3 -I /work/scripts/test_slz.py` : décompresse tous les blocs alignés (validation SLZ)
-- `python3 -I /work/scripts/recover_key.py` : récupère et valide la clé SLE
-- `python3 -I /work/scripts/scan_chunks.py` : inventaire de tous les blocs SLZ/SLE → `work/chunks.tsv`, modules → `work/modules/`
-- `python3 -I /work/scripts/scan_inner.py` : décompression complète, overlays `MWo3` → `work/overlays/`
-- `python3 -I /work/scripts/scan_parts.py` : **référence** — tous les modules uniques, morceau par morceau → `work/parts/`
-- `python3 -I /work/scripts/check_base.py <module>` : vérifie la base de chargement par les cibles `jal`
-- `python3 -I /work/scripts/scan_grp.py` : conteneurs à répertoire et entrées `GRP`
-- `scan_raw_overlays.py`, `scan_nested.py`, `peek_all.py`, `scan_data_overlays.py`, `sle_failures.py`, `calls_into_slots.py` : recherches du mode B (section 7.6)
-- `python3 -I /work/scripts/module_stats.py` : statistiques de code par emplacement
-- `python3 -I /work/scripts/list_irx.py` : modules IOP
+- `python3 -I /work/scripts/test_slz.py`: decompresses all aligned blocks (SLZ validation)
+- `python3 -I /work/scripts/recover_key.py`: recovers and validates the SLE key
+- `python3 -I /work/scripts/scan_chunks.py`: inventory of all SLZ/SLE blocks → `work/chunks.tsv`, modules → `work/modules/`
+- `python3 -I /work/scripts/scan_inner.py`: full decompression, `MWo3` overlays → `work/overlays/`
+- `python3 -I /work/scripts/scan_parts.py`: **reference** — all unique modules, piece by piece → `work/parts/`
+- `python3 -I /work/scripts/check_base.py <module>`: checks the load base using `jal` targets
+- `python3 -I /work/scripts/scan_grp.py`: directory containers and `GRP` entries
+- `scan_raw_overlays.py`, `scan_nested.py`, `peek_all.py`, `scan_data_overlays.py`, `sle_failures.py`, `calls_into_slots.py`: mode B searches (section 7.6)
+- `python3 -I /work/scripts/module_stats.py`: code statistics per slot
+- `python3 -I /work/scripts/list_irx.py`: IOP modules
 
-Bibliothèque : `tools/slz.py` (SLZ types 0 à 3, déchiffrement SLE, chaînes de blocs, clé).
+Library: `tools/slz.py` (SLZ types 0 to 3, SLE decryption, block chains, key).
 
-**Outil de référence : `tools/extract.py`** (voir `tools/README.md`). Il remplace en un seul passage les scripts d'exploration ci-dessus pour l'extraction. `scripts/check_extract.py` le recoupe avec `scan_parts.py` : 25 modules sur 25 identiques.
+**Reference tool: `tools/extract.py`** (see `tools/README.md`). In a single pass, it replaces the exploration scripts above for extraction. `scripts/check_extract.py` cross-checks it against `scan_parts.py`: 25 out of 25 modules identical.
 
-Scripts Ghidra (`ghidra_scripts/`, via `analyzeHeadless`) : `AuditStats.java`, `FindKeyFunctions.java`, `FindSlzCandidates.java`, `FindScalar.java`, `Decompile.java`.
+Ghidra scripts (`ghidra_scripts/`, via `analyzeHeadless`): `AuditStats.java`, `FindKeyFunctions.java`, `FindSlzCandidates.java`, `FindScalar.java`, `Decompile.java`.
 
-> Ne jamais versionner ni redistribuer l'ISO, `extracted/` ou toute donnée issue du jeu.
+> Never commit or redistribute the ISO, `extracted/`, or any data derived from the game.

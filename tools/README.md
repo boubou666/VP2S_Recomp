@@ -1,76 +1,86 @@
-# Outils
+# Tools
 
-Outils d'atelier, lancés une fois sur la machine de développement. Ils ne font pas partie du port : le port sera du code natif issu de la recompilation statique du MIPS du jeu. `extract.py` fournit au recompilateur le code des modules, qui est chiffré et compressé sur le disque.
+Workshop tools, run once on the development machine. They are not part of the port: the port will be native code produced by static recompilation of the game's MIPS code. `extract.py` supplies the recompiler with the modules' code, which is encrypted and compressed on the disc.
 
-## `pipeline.py` — de l'ISO au C++ recompilé
+## `pipeline.py` — from the ISO to recompiled C++
 
-Orchestrateur, à lancer sous Windows depuis la racine du projet (Python 3.10 ou plus, sans dépendance). Tout tourne en natif, sans Docker :
+Orchestrator, to be run on Windows from the project root (Python 3.10 or later, no dependencies). Everything runs natively, without Docker:
 
 ```bash
 python tools/pipeline.py
 ```
 
-| Étape | Rôle | Sortie (`build/`) |
+| Stage | Role | Output (`build/`) |
 |---|---|---|
 | `extract` | `extract.py` | `extract/` |
-| `wrap` | copie de l'ELF principal, `wrap_elf.py` pour chaque module ; les initialiseurs statiques (fin de `.data`, avant la table de constructeurs de l'en-tête) deviennent une section exécutable `.init` | `elf/main.elf`, `elf/modNNN.elf` |
-| `ghidra` | analyse Ghidra headless (processeur `r5900` imposé) et export PS2Recomp, en une session | `ghidra/export/<nom>.toml`, `<nom>_functions.csv` |
-| `tool` | compile `ps2_recomp` et `ps2_analyzer` depuis le fork (`external/PS2Recomp`) avec MSVC | `tests/` |
-| `sdk` | `ps2_analyzer` reconnaît les fonctions du SDK Sony par signature, pour les relier aux implémentations C++ du runtime | `sdk/<nom>.toml` |
-| `entries` | `find_entry_points.py` : fonctions que Ghidra ne voit pas (atteintes par pointeur, y compris depuis un autre fichier comme une vtable de l'ELF principal vers le module cœur ; constructeurs des modules ; fonctions de l'ELF principal appelées seulement depuis un overlay) ; elles deviennent des `entry_points` du recompilateur | `entries/<nom>.txt` |
-| `recomp` | `ps2_recomp` sur chaque entrée, avec la carte Ghidra et les liaisons SDK fusionnées (à adresse égale, le nom SDK l'emporte) ; les modules en mode module (`module_name = "modNNN"`). La sortie passe par `recomp-staging/` et seuls les fichiers modifiés sont recopiés, pour que MSVC ne recompile que ce qui a changé | `recomp/<nom>/`, `recomp/<nom>.log` |
-| `report` | chiffres par entrée et totaux | `report.md`, `report.json` |
-| `port` | compile `port/` (runtime du fork + code généré) avec MSVC (VS 2022 Build Tools, via `vswhere` ou `VP2S_VS_DIR`) | `port/vp2s.exe` |
-| `test` | compile et lance les suites de tests du fork avec MSVC (`ps2x_tests` et les 4 suites IOP) | `tests/<suite>.log` |
+| `wrap` | copies the main ELF, runs `wrap_elf.py` on each module; the static initializers (end of `.data`, before the header's constructor table) become an executable `.init` section | `elf/main.elf`, `elf/modNNN.elf` |
+| `ghidra` | headless Ghidra analysis (`r5900` processor forced) and PS2Recomp export, in a single session | `ghidra/export/<name>.toml`, `<name>_functions.csv` |
+| `tool` | builds `ps2_recomp` and `ps2_analyzer` from the fork (`external/PS2Recomp`) with MSVC | `tests/` |
+| `sdk` | `ps2_analyzer` identifies Sony SDK functions by signature, to bind them to the runtime's C++ implementations | `sdk/<name>.toml` |
+| `entries` | `find_entry_points.py`: functions Ghidra does not see (reached through a pointer, including from another file, such as a vtable in the main ELF pointing into the core module; module constructors; main ELF functions called only from an overlay); they become recompiler `entry_points` | `entries/<name>.txt` |
+| `recomp` | `ps2_recomp` on each input, with the Ghidra map and the SDK bindings merged (at the same address, the SDK name wins); modules are built in module mode (`module_name = "modNNN"`). Output goes through `recomp-staging/` and only modified files are copied over, so that MSVC only rebuilds what changed | `recomp/<name>/`, `recomp/<name>.log` |
+| `report` | per-input figures and totals | `report.md`, `report.json` |
+| `port` | builds `port/` (fork runtime + generated code) with MSVC (VS 2022 Build Tools, located via `vswhere` or `VP2S_VS_DIR`) | `port/vp2s.exe` |
+| `test` | builds and runs the fork's test suites with MSVC (`ps2x_tests` and the 4 IOP suites) | `tests/<suite>.log` |
 
-Lancer le jeu : `build\port\vp2s.exe build\extract\iso\SLES_546.45`. L'image ISO est cherchée via `VP2S_ISO`, sinon en remontant depuis le dossier de l'ELF. `VP2S_DIAG=1` affiche toutes les 5 secondes le PC, les modules résidents par emplacement, les threads du jeu (état, attente, PC), l'état de l'ouvrier son et, avec le préfixe `[vp2s-iop]`, le côté IOP : modules chargés via SIF, clients et serveurs RPC, état de l'émulateur IOP et de ses threads, derniers appels RPC ; avec le préfixe `[vp2s-gs]`, le côté GS : registres d'affichage, tampon présenté, pixels non noirs par tampon, activité GS récente. Il enregistre aussi une capture de l'écran du jeu (`vp2s_diag_N.png`), prise directement dans l'image produite par le GS du runtime, même fenêtre réduite. **F9** enregistre une capture à tout moment (`vp2s_shot_N.png`). `VP2S_DUMP=<adresse>:<taille>` écrit cette zone de mémoire dans `vp2s_dump.bin`, et `VP2S_WATCH=<adresse>,<adresse>…` affiche ces mots mémoire à chaque passage. Le décodage des vidéos passe par FFmpeg (`-DVP2S_FFMPEG=OFF` pour l'enlever) : à la première compilation, le fork télécharge FFmpeg 7.1 LGPL en DLL (35 Mo) dans `build/port/ThirdParty`. `VP2S_PROFILE=<secondes>` échantillonne les threads du jeu environ 1 000 fois par seconde et affiche à cet intervalle (préfixe `[vp2s-prof]`) les fonctions où le thread le plus occupé passe son temps, en exclusif et en inclusif. Les noms viennent des symboles publics de `vp2s.pdb`, produit à l'édition de liens sans recompilation. Les fonctions statiques sont attribuées au symbole public qui les précède, d'où quelques noms trompeurs (`std::invalid_argument`…). L'échantillonnage ralentit le jeu : ne pas mesurer la vitesse en même temps. Les autres threads occupés plus de 30 % du temps (les threads de dessin du GS) sont aussi listés, avec leurs fonctions principales. Le portage active le dessin GS asynchrone du fork (`GSCpuBackend::SetAsyncRasterization`) : les primitives sont dessinées par des threads dédiés, ce qui rend les lectures directes de la VRAM (diagnostic des pixels non noirs) approximatives pendant un dessin. `VP2S_GS_SYNC=1` revient au dessin immédiat sur le thread du jeu, pour comparer. Le débogueur du runtime (ImGui) s'ouvre avec **F1** ; il est compilé par défaut (`-DVP2S_DEBUG_UI=OFF` pour l'enlever).
+Running the game: `build\port\vp2s.exe build\extract\iso\SLES_546.45`. The ISO image is looked up via `VP2S_ISO`, otherwise by walking up from the ELF's folder.
 
-Les fonctions du SDK que la base de signatures ne reconnaît pas sont liées à la main dans `MANUAL_BINDINGS` (`tools/pipeline.py`), par exemple l'enveloppe `sceSifLoadModuleBuffer` en `0x1400f8`. L'étape `recomp` régénère une entrée dès que sa configuration change.
+Diagnostics and runtime options:
 
-Chaque étape saute le travail dont les sorties sont plus récentes que les entrées. Options : `--only <étape>`, `--from <étape>`, `--force`, `--inputs main,mod003`.
+- `VP2S_DIAG=1` prints every 5 seconds the PC, the resident modules per slot, the game threads (state, wait, PC), the state of the sound worker and, with the `[vp2s-iop]` prefix, the IOP side: modules loaded via SIF, RPC clients and servers, state of the IOP emulator and its threads, latest RPC calls; with the `[vp2s-gs]` prefix, the GS side: display registers, presented buffer, non-black pixels per buffer, recent GS activity. It also saves a screenshot of the game screen (`vp2s_diag_N.png`), taken directly from the image produced by the runtime's GS, even when the window is minimized.
+- **F9** saves a screenshot at any time (`vp2s_shot_N.png`).
+- `VP2S_DUMP=<address>:<size>` writes that memory range to `vp2s_dump.bin`, and `VP2S_WATCH=<address>,<address>…` prints those memory words on each pass.
+- Video decoding goes through FFmpeg (`-DVP2S_FFMPEG=OFF` to remove it): on the first build, the fork downloads FFmpeg 7.1 LGPL as DLLs (35 MB) into `build/port/ThirdParty`.
+- `VP2S_PROFILE=<seconds>` samples the game threads about 1,000 times per second and prints at that interval (`[vp2s-prof]` prefix) the functions where the busiest thread spends its time, exclusive and inclusive. Names come from the public symbols of `vp2s.pdb`, produced at link time without recompiling. Static functions are attributed to the preceding public symbol, hence a few misleading names (`std::invalid_argument`…). Sampling slows the game down: do not measure speed at the same time. Other threads busy more than 30% of the time (the GS drawing threads) are also listed, with their main functions.
+- The port enables the fork's asynchronous GS drawing (`GSCpuBackend::SetAsyncRasterization`): primitives are drawn by dedicated threads, which makes direct VRAM reads (the non-black pixel diagnostic) approximate while a draw is in progress. `VP2S_GS_SYNC=1` reverts to immediate drawing on the game thread, for comparison.
+- The runtime debugger (ImGui) opens with **F1**; it is built by default (`-DVP2S_DEBUG_UI=OFF` to remove it).
 
-Prérequis : Visual Studio 2022 Build Tools, Ghidra (`GHIDRA_INSTALL_DIR`), et le **zip** de l'extension Emotion Engine pour cette version de Ghidra (`VP2S_GHIDRA_EE_ZIP`, par défaut dans `D:\Tools\downloads`). Le dossier facultatif `build/deps` contient les sources des dépendances CMake (`<nom>-src`), pour compiler sans réseau.
+SDK functions that the signature database does not recognize are bound manually in `MANUAL_BINDINGS` (`tools/pipeline.py`), for example the `sceSifLoadModuleBuffer` wrapper at `0x1400f8`. The `recomp` stage regenerates an input as soon as its configuration changes.
 
-> Pourquoi le zip de l'extension : lancé via l'alias `python` de Windows (Store ou gestionnaire d'installation Python), Python et ses processus enfants voient un `%APPDATA%` redirigé. Ghidra n'y trouve pas les extensions installées et se rabat **silencieusement** sur un langage MIPS64 générique. L'orchestrateur donne donc à Ghidra son propre dossier de réglages (`XDG_CONFIG_HOME` → `build/ghidra/settings`), y installe l'extension, et refuse de continuer si un autre langage que `r5900` apparaît dans le journal.
+Each stage skips work whose outputs are newer than its inputs. Options: `--only <stage>`, `--from <stage>`, `--force`, `--inputs main,mod003`.
 
-Pour compiler un autre état du fork (un worktree git, par exemple) sans toucher aux dossiers par défaut, `pipeline.py` lit `VP2S_FORK` (dossier du fork), `VP2S_TEST_BUILD` et `VP2S_PORT_BUILD` (noms des dossiers de compilation sous `build/`) :
+Prerequisites: Visual Studio 2022 Build Tools, Ghidra (`GHIDRA_INSTALL_DIR`), and the Emotion Engine extension **zip** for that Ghidra version (`VP2S_GHIDRA_EE_ZIP`, by default in `D:\Tools\downloads`). The optional `build/deps` folder holds the sources of the CMake dependencies (`<name>-src`), for building without network access.
+
+> Why the extension zip: when launched through the Windows `python` alias (Store or Python install manager), Python and its child processes see a redirected `%APPDATA%`. Ghidra does not find the installed extensions there and **silently** falls back to a generic MIPS64 language. The orchestrator therefore gives Ghidra its own settings folder (`XDG_CONFIG_HOME` → `build/ghidra/settings`), installs the extension there, and refuses to continue if any language other than `r5900` appears in the log.
+
+To build another state of the fork (a git worktree, for example) without touching the default folders, `pipeline.py` reads `VP2S_FORK` (fork folder), `VP2S_TEST_BUILD` and `VP2S_PORT_BUILD` (names of the build folders under `build/`):
 
 ```bash
 VP2S_FORK=D:/VP2S_Recomp/build/wt/gs-fast VP2S_PORT_BUILD=port-gs python tools/pipeline.py --only port
 ```
 
-Une archive FFmpeg déjà téléchargée par une autre compilation du portage est réutilisée. L'étape `test` ne compile que les suites définies par le fork choisi.
+An FFmpeg archive already downloaded by another build of the port is reused. The `test` stage only builds the suites defined by the selected fork.
 
-## `extract.py` — extracteur du disque
+## `extract.py` — disc extractor
 
-Python 3.10 ou plus, sans dépendance (pas de 7-Zip, pas de paquets tiers).
+Python 3.10 or later, no dependencies (no 7-Zip, no third-party packages).
 
 ```bash
 python -I tools/extract.py "Valkyrie Profile 2 - Silmeria (France).iso" out
 ```
 
-Ajouter `--assets` pour décompresser aussi toutes les données (≈ 2,7 Gio, environ 1 minute). `--jobs N` limite le nombre de processus.
+Add `--assets` to also decompress all the data (≈ 2.7 GiB, about 1 minute). `--jobs N` limits the number of processes.
 
-Contenu de `out/` :
+Contents of `out/`:
 
-| Chemin | Contenu |
+| Path | Contents |
 |---|---|
-| `iso/` | fichiers ISO9660 : `SLES_546.45`, `IOPRP300.IMG`, `SYSTEM.CNF` |
-| `modules/` | les 25 modules de code, déchiffrés et décompressés, **tels qu'en mémoire** : l'en-tête de 0x80 octets est à l'adresse de chargement, le code à `+0x80` |
-| `modules.json` | pour chaque module : identifiant, nom d'origine, adresse, emplacements, tailles (code, données, BSS), constructeurs, empreinte, occurrences sur le disque, et cohérence avec le segment déclaré dans l'ELF |
-| `iop/` | les 10 modules IOP (`sio2man`, `mcman`, `Csm_`/`Csd_`/`Csi_`…) |
-| `chunks.tsv` | index des 25 558 chaînes SLZ/SLE : décalage, LBA, nombre de morceaux, nature de chaque morceau |
-| `assets/` | (`--assets`) chaque morceau décompressé, `<décalage>_<morceau>.<nature>` |
-| `manifest.json` | résumé, erreurs, et emplacements trouvés / déclarés |
+| `iso/` | ISO9660 files: `SLES_546.45`, `IOPRP300.IMG`, `SYSTEM.CNF` |
+| `modules/` | the 25 code modules, decrypted and decompressed, **as laid out in memory**: the 0x80-byte header is at the load address, the code at `+0x80` |
+| `modules.json` | for each module: identifier, original name, address, slots, sizes (code, data, BSS), constructors, hash, occurrences on the disc, and consistency with the segment declared in the ELF |
+| `iop/` | the 10 IOP modules (`sio2man`, `mcman`, `Csm_`/`Csd_`/`Csi_`…) |
+| `chunks.tsv` | index of the 25,558 SLZ/SLE chains: offset, LBA, number of chunks, type of each chunk |
+| `assets/` | (`--assets`) each decompressed chunk, `<offset>_<chunk>.<type>` |
+| `manifest.json` | summary, errors, and slots found / declared |
 
-Résultat attendu sur SLES-54645 : 25 642 en-têtes, 25 558 chaînes, 0 erreur, 25 modules (tous conformes à leur segment ELF), 10 modules IOP.
+Expected result on SLES-54645: 25,642 headers, 25,558 chains, 0 errors, 25 modules (all matching their ELF segment), 10 IOP modules.
 
 ## `wrap_elf.py` — module → ELF
 
-Enveloppe un module extrait dans un ELF R5900 minimal, chargé à son adresse, avec l'en-tête du module en mémoire (section `.modhdr`, qui sert de garde au mode module de PS2Recomp), puis `.text`, `.data` et `.bss` d'après l'en-tête.
+Wraps an extracted module in a minimal R5900 ELF, loaded at its address, with the module header in memory (`.modhdr` section, which acts as the guard for PS2Recomp's module mode), followed by `.text`, `.data` and `.bss` as described by the header.
 
-## `slz.py` — compression SLZ / chiffrement SLE
+## `slz.py` — SLZ compression / SLE encryption
 
-Bibliothèque utilisée par l'extracteur : SLZ types 0 à 3, déchiffrement SLE (la clé n'est pas fournie : variable `VP2S_SLE_KEY` ou fichier `build/sle_key.txt`, 32 chiffres hexadécimaux ; voir `load_sle_key`), lecture des chaînes de blocs. Les formats sont décrits dans `docs/AUDIT.md`, sections 7.1 à 7.3.
+Library used by the extractor: SLZ types 0 to 3, SLE decryption (the key is not provided: `VP2S_SLE_KEY` variable or `build/sle_key.txt` file, 32 hexadecimal digits; see `load_sle_key`), reading of block chains. The formats are described in `docs/AUDIT.md`, sections 7.1 to 7.3.
 
-> `out/`, `work/` et `extracted/` contiennent des données du jeu : ne jamais les versionner ni les redistribuer.
+> `out/`, `work/` and `extracted/` contain game data: never version or redistribute them.
