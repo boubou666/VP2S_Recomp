@@ -367,6 +367,12 @@ int main(int argc, char *argv[])
             std::cerr << "Failed to load ELF file: " << elf.string() << std::endl;
             return 1;
         }
+        // VP2's music is decoded by an EE thread (VU1 synthesis) that the IOP consumes at its own
+        // pace: fast-forwarding the EE to wall-clock time while it waits on the GS starves that
+        // thread and the music drops out. Let emulated time slow down instead (the SPU2 output is
+        // time-stretched). VP2S_WALLCLOCK_CATCHUP=1 restores the runtime default.
+        const char *catchUp = std::getenv("VP2S_WALLCLOCK_CATCHUP");
+        runtime.eeScheduler().setWallClockCatchUp(catchUp && std::strcmp(catchUp, "0") != 0);
         startProfiler();
         runtime.run();
         std::cout.flush();
