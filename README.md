@@ -124,6 +124,7 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 | `VP2S_WALLCLOCK_CATCHUP=1` | Fast-forward emulated time to wall-clock time (off by default: it starves the music thread) |
 | `VP2S_DUMP=<address>:<size>`, `VP2S_WATCH=<address>,…` | Dump a memory range, or print memory words on every diagnostic pass |
 | `PS2X_PAD_SCRIPT=t:BUTTON[/ms],…` | Scripted button presses (seconds from start), for unattended runs |
+| `PS2X_MPEG_SKIP=1` | End every movie after its first picture (the intro and the opening movie: New Game reaches the first field scene about 160 s sooner). For tests; `25:SQUARE,30:START,36:START,42:CROSS` then starts a new game |
 | `PS2X_GS_DUMP=<dir>`, `PS2X_GS_DUMP_AFTER=<s>` | Log the next 4000 GS primitives with their state, textures and VRAM |
 | `PS2X_VU1_RECORD=<file>` | Record VU1 microprogram runs for the `ps2_vu1_replay` tool |
 

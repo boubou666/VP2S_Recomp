@@ -109,13 +109,14 @@ if(VP2S_VU1_AOT AND VP2S_VU1_AOT_SOURCES)
         target_sources(vp2s_vu1_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
                                                "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_replay_profile.cpp")
         target_link_libraries(vp2s_vu1_replay PRIVATE dbghelp winmm)
-        target_link_options(vp2s_vu1_replay PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /FORCE:MULTIPLE)
+        target_link_options(vp2s_vu1_replay PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /FORCE:MULTIPLE /CGTHREADS:16)
     endif()
 endif()
 ps2x_stage_ffmpeg_runtime_dlls(vp2s) # no-op without FFmpeg
 if(MSVC)
     # Public symbols in vp2s.pdb (no /Zi needed) for the VP2S_PROFILE sampler: only relinks.
-    target_link_options(vp2s PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO)
+    # /CGTHREADS: the runtime is compiled /GL, so each link generates its code (4 threads by default).
+    target_link_options(vp2s PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /CGTHREADS:16)
     target_link_libraries(vp2s PRIVATE dbghelp winmm)
     # Large recompiled functions get huge MSVC frames (up to ~550 KB: one stack slot per SIMD
     # temporary), and guest calls nest as host calls on the game thread. With the default 1 MB
