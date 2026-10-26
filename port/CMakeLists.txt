@@ -95,13 +95,22 @@ if(VP2S_VU1_AOT AND VP2S_VU1_AOT_SOURCES)
     target_link_libraries(vp2s_vu1_aot PRIVATE ps2_runtime)
     set_target_properties(vp2s_vu1_aot PROPERTIES UNITY_BUILD OFF JOB_POOL_COMPILE vp2s_vu1_aot)
     if(MSVC)
-        target_compile_options(vp2s_vu1_aot PRIVATE /O2 /Ob2 /Oi /arch:AVX2 /fp:fast /GS- /bigobj /FS)
+        # /fp:precise: under /fp:fast the compiler folds products with the constant lanes of VF0 to +0 (the VU gives
+        # -0 for a negative operand) and may fuse multiply-adds, which round differently.
+        target_compile_options(vp2s_vu1_aot PRIVATE /O2 /Ob2 /Oi /arch:AVX2 /fp:precise /GS- /bigobj /FS)
     endif()
     target_sources(vp2s PRIVATE $<TARGET_OBJECTS:vp2s_vu1_aot>)
     # The fork's VU1 replay tool with this microcode linked in: checks it against runs recorded in
     # the game with PS2X_VU1_RECORD (vp2s_vu1_replay <trace> [repeat] [--ignore-flags]).
     add_executable(vp2s_vu1_replay "${VP2S_FORK}/ps2xRuntime/tools/ps2_vu1_replay.cpp" $<TARGET_OBJECTS:vp2s_vu1_aot>)
     target_link_libraries(vp2s_vu1_replay PRIVATE ps2_runtime)
+    if(MSVC)
+        # VP2S_PROFILE=<seconds> samples the replay too (symbols from vp2s_vu1_replay.pdb).
+        target_sources(vp2s_vu1_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
+                                               "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_replay_profile.cpp")
+        target_link_libraries(vp2s_vu1_replay PRIVATE dbghelp winmm)
+        target_link_options(vp2s_vu1_replay PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /FORCE:MULTIPLE)
+    endif()
 endif()
 ps2x_stage_ffmpeg_runtime_dlls(vp2s) # no-op without FFmpeg
 if(MSVC)
