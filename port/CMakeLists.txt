@@ -112,6 +112,16 @@ if(VP2S_VU1_AOT AND VP2S_VU1_AOT_SOURCES)
         target_link_options(vp2s_vu1_replay PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /FORCE:MULTIPLE /CGTHREADS:16)
     endif()
 endif()
+# The fork's GS replay tool with the same runtime build: times the rasterizer on frames recorded with
+# PS2X_GS_RECORD (vp2s_gs_replay <trace> [repeat]); VP2S_PROFILE=<seconds> samples it.
+add_executable(vp2s_gs_replay "${VP2S_FORK}/ps2xRuntime/tools/ps2_gs_replay.cpp")
+target_link_libraries(vp2s_gs_replay PRIVATE ps2_runtime)
+if(MSVC)
+    target_sources(vp2s_gs_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
+                                          "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_replay_profile.cpp")
+    target_link_libraries(vp2s_gs_replay PRIVATE dbghelp winmm)
+    target_link_options(vp2s_gs_replay PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /FORCE:MULTIPLE /CGTHREADS:16)
+endif()
 ps2x_stage_ffmpeg_runtime_dlls(vp2s) # no-op without FFmpeg
 if(MSVC)
     # Public symbols in vp2s.pdb (no /Zi needed) for the VP2S_PROFILE sampler: only relinks.
