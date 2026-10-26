@@ -395,17 +395,22 @@ int main(int argc, char *argv[])
         // VIF1 (and the VU1 microprograms it starts) on a worker thread with its own clock, the EE
         // ahead of it while it is idle: about 12% more VSync/s on the field scenes, where the EE
         // thread is the bottleneck. PS2X_VIF1_THREAD=0 / PS2X_GS_LAG=0 turn it off.
-        for (const char *name : {"PS2X_VIF1_THREAD", "PS2X_GS_LAG"})
+        // The GS on the GPU (paraLLEl-GS, Vulkan compute; the CPU rasterizer if Vulkan is unavailable): the field's
+        // post-processing passes kept the CPU rasterizer at about 24 VSync/s, 36 on the GPU. PS2X_GS_RENDERER=cpu
+        // (any other value) keeps the CPU rasterizer.
+        const auto setDefault = [](const char *name, const char *value)
         {
-            if (!std::getenv(name))
-            {
+            if (std::getenv(name))
+                return;
 #if defined(_WIN32)
-                _putenv_s(name, "1");
+            _putenv_s(name, value);
 #else
-                setenv(name, "1", 0);
+            setenv(name, value, 0);
 #endif
-            }
-        }
+        };
+        setDefault("PS2X_VIF1_THREAD", "1");
+        setDefault("PS2X_GS_LAG", "1");
+        setDefault("PS2X_GS_RENDERER", "parallel");
         PS2Runtime runtime;
 
         Diagnostics diagnostics;
@@ -428,7 +433,8 @@ int main(int argc, char *argv[])
             return 1;
         }
         std::cout << "[vp2s] VIF1 worker thread " << (runtime.memory().vif1Threaded() ? "on" : "off") << ", GS lag "
-                  << (runtime.memory().gsLag() ? "on" : "off") << std::endl;
+                  << (runtime.memory().gsLag() ? "on" : "off") << ", GS renderer " << std::getenv("PS2X_GS_RENDERER")
+                  << std::endl;
         if (!runtime.loadELF(elf.string()))
         {
             std::cerr << "Failed to load ELF file: " << elf.string() << std::endl;
