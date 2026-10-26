@@ -19,6 +19,7 @@ python tools/pipeline.py
 | `sdk` | `ps2_analyzer` identifies Sony SDK functions by signature, to bind them to the runtime's C++ implementations | `sdk/<name>.toml` |
 | `entries` | `find_entry_points.py`: functions Ghidra does not see (reached through a pointer, including from another file, such as a vtable in the main ELF pointing into the core module; module constructors; main ELF functions called only from an overlay); they become recompiler `entry_points` | `entries/<name>.txt` |
 | `recomp` | `ps2_recomp` on each input, with the Ghidra map and the SDK bindings merged (at the same address, the SDK name wins); modules are built in module mode (`module_name = "modNNN"`). Output goes through `recomp-staging/` and only modified files are copied over, so that MSVC only rebuilds what changed | `recomp/<name>/`, `recomp/<name>.log` |
+| `vu` | `ps2_vu_aot` on each input: its VU1 microcode compiled ahead of time. By default in fast mode (`PS2X_VU_AOT_FAST`: each block's static schedule, relaxed floats; VU1 about 25% faster, the same GS packets on recorded field runs); `VP2S_VU_EXACT=1` keeps the exact pipeline model. Changing the mode regenerates the fragments | `vu_aot/<name>/` |
 | `report` | per-input figures and totals | `report.md`, `report.json` |
 | `port` | builds `port/` (fork runtime + generated code) with MSVC (VS 2022 Build Tools, located via `vswhere` or `VP2S_VS_DIR`) | `port/vp2s.exe` |
 | `test` | builds and runs the fork's test suites with MSVC (`ps2x_tests` and the 4 IOP suites) | `tests/<suite>.log` |

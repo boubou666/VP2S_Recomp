@@ -24,7 +24,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ## Status
 
-**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the first field cutscene with its subtitled dialogue. The field scene renders correctly, but runs at about 30 to 40 VSync/s.
+**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the first field cutscene with its subtitled dialogue. The field scene renders correctly, but runs at about 45 VSync/s.
 
 | Milestone | |
 |---|:---:|
@@ -136,7 +136,7 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 
 ## Known issues
 
-- **The field is slow:** about 30 to 40 VSync/s instead of 50. VU1 runs in an interpreter, and the GS is a software rasterizer.
+- **The field is not at full speed yet:** about 45 VSync/s instead of 50. The game thread and the VU1 thread are both busy about 70% of the time.
 - **Not reached yet:** everything after the first field cutscene.
 
 ## Repository layout

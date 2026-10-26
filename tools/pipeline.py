@@ -10,7 +10,8 @@ Stages, in order (each skips the work whose outputs are newer than its inputs):
   recomp   ps2_recomp per input (Ghidra map + SDK bindings);
            modules in overlay module mode                       -> build/recomp/<name>/
   vu       ps2_vu_aot per input: VU1 microcode compiled ahead
-           of time (inputs without microcode get nothing)       -> build/vu_aot/<name>/
+           of time (inputs without microcode get nothing;
+           fast mode unless VP2S_VU_EXACT=1)                    -> build/vu_aot/<name>/
   report   per-input and total figures                         -> build/report.json, build/report.md
   port     MSVC build of port/ (runtime + generated code)      -> build/port/vp2s.exe
   test     MSVC build of the fork test suites, then run them    -> build/tests/<suite>.log
@@ -54,6 +55,9 @@ TOOL = TEST_BUILD / "ps2xRecomp" / "ps2_recomp.exe"
 ANALYZER = TEST_BUILD / "ps2xAnalyzer" / "ps2_analyzer.exe"
 VU_AOT_TOOL = TEST_BUILD / "ps2xRecomp" / "ps2_vu_aot.exe"
 VU_AOT_DIR = BUILD / os.environ.get("VP2S_VU_AOT", "vu_aot")
+# VU1 microcode on its blocks' static schedule with relaxed floats (ps2_vu_aot, PS2X_VU_AOT_FAST): VU1 about 25%
+# faster, the same GS packets on recorded field runs. VP2S_VU_EXACT=1 keeps the exact pipeline model.
+VU_AOT_MODE = "exact" if os.environ.get("VP2S_VU_EXACT") else "fast"
 SDK_DIR = BUILD / "sdk"
 ENTRIES_DIR = BUILD / "entries"
 # Optional offline cache of CMake dependency sources (<name>-src directories, e.g. copied
@@ -357,13 +361,17 @@ def stage_vu(args) -> None:
     for name in input_names(args.inputs):
         out = VU_AOT_DIR / name
         stamp = VU_AOT_DIR / f".{name}.done"  # also for inputs without microcode
-        if not stale([stamp], [ELF_DIR / f"{name}.elf", VU_AOT_TOOL], args.force):
+        same_mode = stamp.exists() and stamp.read_text().startswith(f"mode={VU_AOT_MODE}\n")
+        if same_mode and not stale([stamp], [ELF_DIR / f"{name}.elf", VU_AOT_TOOL], args.force):
             continue
         staging = VU_AOT_DIR / f".{name}-staging"
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(parents=True)
+        env = {key: value for key, value in os.environ.items() if key != "PS2X_VU_AOT_FAST"}
+        if VU_AOT_MODE == "fast":
+            env["PS2X_VU_AOT_FAST"] = "1"
         result = subprocess.run([str(VU_AOT_TOOL), str(ELF_DIR / f"{name}.elf"), str(staging), f"{name}_"],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=env)
         if result.returncode != 0:
             raise SystemExit(f"ps2_vu_aot failed on {name}: {result.stderr.strip()}")
         if any(staging.glob("*.cpp")):
@@ -372,7 +380,7 @@ def stage_vu(args) -> None:
         else:
             shutil.rmtree(out, ignore_errors=True)
         shutil.rmtree(staging, ignore_errors=True)
-        stamp.write_text(result.stdout.strip() + "\n")
+        stamp.write_text(f"mode={VU_AOT_MODE}\n" + result.stdout.strip() + "\n")
 
 
 def sync_generated(source: Path, target: Path) -> tuple[int, dict]:
