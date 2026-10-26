@@ -24,7 +24,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ## Status
 
-**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the first field cutscene with its subtitled dialogue. The field's 3D rendering is still wrong (flat green areas, magnified patterns), and the field runs at about 25 to 35 VSync/s.
+**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the first field cutscene with its subtitled dialogue. The field scene renders correctly, but runs at about 30 to 40 VSync/s.
 
 | Milestone | |
 |---|:---:|
@@ -37,7 +37,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 | Title and in-game music (VU1 synthesis, SPU2 AutoDMA) | ✅ |
 | Opening movie (MPEG-2 decoded with FFmpeg) | ✅ |
 | New Game: chapter title card, first field cutscene with subtitles | ✅ |
-| Field 3D rendering | 🔧 |
+| Field 3D rendering | ✅ |
 | Field at full speed | 🔧 |
 | Exploration, battles, menus, saving | ⏳ |
 | Widescreen, higher resolution | ⏳ |
@@ -133,8 +133,7 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 
 ## Known issues
 
-- **Field 3D rendering is wrong:** flat green areas and magnified patterns instead of the scene; the subtitles and 2D overlays draw correctly.
-- **The field is slow:** about 25 to 35 VSync/s instead of 50. VU1 runs in an interpreter, and the GS is a software rasterizer.
+- **The field is slow:** about 30 to 40 VSync/s instead of 50. VU1 runs in an interpreter, and the GS is a software rasterizer.
 - **Not reached yet:** everything after the first field cutscene.
 
 ## Repository layout

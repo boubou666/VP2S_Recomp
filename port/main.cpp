@@ -90,7 +90,27 @@ namespace
                 std::cout << "#" << thread.waitId;
             }
             std::cout << std::hex << " pc=0x" << thread.pc << " ra=0x" << thread.ra << " entry=0x" << thread.entry
-                      << std::dec << " prio=" << thread.currentPriority << std::endl;
+                      << std::dec << " prio=" << thread.currentPriority << " wakeups=" << thread.wakeupCount;
+            // Words on the thread's stack that look like return addresses into game code: a rough
+            // call chain for a thread blocked in a kernel call.
+            if (thread.sp >= 0x00100000u && thread.sp < 0x02000000u)
+            {
+                const uint8_t *rdram = runtime.memory().getRDRAM();
+                std::cout << std::hex << " sp=0x" << thread.sp << " stack:";
+                int shown = 0;
+                for (uint32_t offset = 0; offset < 0x400u && shown < 10; offset += 4u)
+                {
+                    uint32_t word = 0;
+                    std::memcpy(&word, rdram + ((thread.sp + offset) & PS2_RAM_MASK), sizeof(word));
+                    if (word >= 0x00100008u && word < 0x00600000u && (word & 3u) == 0u)
+                    {
+                        std::cout << " 0x" << word;
+                        ++shown;
+                    }
+                }
+                std::cout << std::dec;
+            }
+            std::cout << std::endl;
         }
         for (const EeSemaphoreSnapshot &sema : snap.semaphores)
         {
@@ -200,6 +220,33 @@ namespace
                       << " count+91a0=0x" << u32(0x91a0) << " c4=0x" << u32(0xc4) << std::dec
                       << " stream+c8/c9/9186=" << int(rdram[kCdManager + 0xc8]) << "/" << int(rdram[kCdManager + 0xc9])
                       << "/" << int(rdram[kCdManager + 0x9186]) << std::endl;
+        }
+
+        // The game's user-mode timer counters (libkernel, on Timer 2 / INTC 11, handler 0x1420d0):
+        // DelayThread and SetTimerAlarm queue counters on the list at +0x18; the handler fires those whose
+        // target (+0x20 + +0x10 - +0x18) the extended count ((overflows << 16 | T2_COUNT) << 4*CLKS) passed.
+        {
+            constexpr uint32_t kTimerManager = 0x0014a1b8u;
+            auto rd32 = [&](uint32_t addr) { uint32_t v; std::memcpy(&v, rdram + (addr & 0x1ffffffu), 4); return v; };
+            auto rd64 = [&](uint32_t addr) { uint64_t v; std::memcpy(&v, rdram + (addr & 0x1ffffffu), 8); return v; };
+            const PS2Memory::EeTimerState t2 = runtime.memory().eeTimerState(2);
+            const EeKernelSnapshot kernel = runtime.eeScheduler().snapshot();
+            std::cout << std::hex << "[vp2s-diag]   timer2 count=0x" << t2.count << " mode=0x" << t2.mode << " comp=0x"
+                      << t2.compare << " backlog=" << t2.compareBacklog << "/" << t2.overflowBacklog << " intc enabled=0x"
+                      << kernel.enabledIntcMask << " pending=0x" << kernel.pendingIntcMask << std::dec
+                      << " invocations=" << kernel.pendingInvocations << (kernel.heldUntilEi ? " held-until-EI" : "")
+                      << std::hex << " | counters ovf=0x" << rd64(kTimerManager) << " +8=0x" << rd32(kTimerManager + 8)
+                      << " +10=0x" << rd32(kTimerManager + 0x10) << " free=0x" << rd32(kTimerManager + 0x14)
+                      << " current=0x" << rd32(kTimerManager + 0x1c) << " list:";
+            uint32_t entry = rd32(kTimerManager + 0x18);
+            for (int i = 0; i < 12 && entry >= 0x100000u && entry < PS2_RAM_SIZE; ++i)
+            {
+                std::cout << " [0x" << entry << " id=" << rd32(entry + 8) << " fl=" << rd32(entry + 0xc) << " base=" << rd64(entry + 0x10)
+                          << " start=" << rd64(entry + 0x18) << " target=" << rd64(entry + 0x20) << " fn=" << rd32(entry + 0x28)
+                          << " arg=" << rd32(entry + 0x30) << "]";
+                entry = rd32(entry);
+            }
+            std::cout << std::dec << std::endl;
         }
 
         // File request manager (pointer at global+8): request queue pumped by FUN_00102e40 and

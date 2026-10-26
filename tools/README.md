@@ -51,6 +51,17 @@ VP2S_FORK=D:/VP2S_Recomp/build/wt/gs-fast VP2S_PORT_BUILD=port-gs python tools/p
 
 An FFmpeg archive already downloaded by another build of the port is reused. The `test` stage only builds the suites defined by the selected fork.
 
+## GS recordings and `ps2_gs_replay`
+
+`PS2X_GS_RECORD=<file>` (with `PS2X_GS_RECORD_AT=<seconds>`, default 0, and `PS2X_GS_RECORD_SECONDS=<seconds>`, default 10) records the GS drawing state and VRAM, then every GIF packet and image upload. The fork's `ps2_gs_replay` tool (built in `build/tests/ps2xRuntime/`) replays a recording on a fresh GS in a fraction of a second:
+
+```bash
+ps2_gs_replay field.gsr --list
+ps2_gs_replay field.gsr --until 793 --dump scene=200,8,0,512,480
+```
+
+`--list` prints every command, `--until N` replays commands 0 to N-1 only, `--dump NAME=FBP,FBW,PSM,WIDTH,HEIGHT` writes a buffer as `NAME.ppm`, and `PS2X_GS_ASYNC_RASTER=1` rasterizes on worker threads like the game. Recordings contain game data (textures, VRAM): keep them under `build/`, never commit them.
+
 ## `extract.py` — disc extractor
 
 Python 3.10 or later, no dependencies (no 7-Zip, no third-party packages).
