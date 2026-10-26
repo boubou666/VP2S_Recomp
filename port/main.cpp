@@ -392,6 +392,20 @@ int main(int argc, char *argv[])
         const char *gsSync = std::getenv("VP2S_GS_SYNC");
         GSCpuBackend::SetAsyncRasterization(!gsSync || std::strcmp(gsSync, "0") == 0);
 #endif
+        // VIF1 (and the VU1 microprograms it starts) on a worker thread with its own clock, the EE
+        // ahead of it while it is idle: about 12% more VSync/s on the field scenes, where the EE
+        // thread is the bottleneck. PS2X_VIF1_THREAD=0 / PS2X_GS_LAG=0 turn it off.
+        for (const char *name : {"PS2X_VIF1_THREAD", "PS2X_GS_LAG"})
+        {
+            if (!std::getenv(name))
+            {
+#if defined(_WIN32)
+                _putenv_s(name, "1");
+#else
+                setenv(name, "1", 0);
+#endif
+            }
+        }
         PS2Runtime runtime;
 
         Diagnostics diagnostics;
@@ -413,6 +427,8 @@ int main(int argc, char *argv[])
             std::cerr << "Failed to initialize PS2 runtime" << std::endl;
             return 1;
         }
+        std::cout << "[vp2s] VIF1 worker thread " << (runtime.memory().vif1Threaded() ? "on" : "off") << ", GS lag "
+                  << (runtime.memory().gsLag() ? "on" : "off") << std::endl;
         if (!runtime.loadELF(elf.string()))
         {
             std::cerr << "Failed to load ELF file: " << elf.string() << std::endl;
