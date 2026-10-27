@@ -212,7 +212,7 @@ namespace
         // Other threads busy over 30% of the time (e.g. GS raster workers): their top functions.
         for (auto &[id, other] : threads)
         {
-            if (id == busiest || other.busy * 10u < other.total * 3u)
+            if (id == busiest || other.busy * 100u < other.total * 15u)
                 continue;
             std::unordered_map<std::string, uint64_t> top;
             for (const auto &[address, count] : other.leaf)
@@ -222,6 +222,27 @@ namespace
             std::cout << "[vp2s-prof] thread " << id << " (" << other.busy << "/" << other.total << "):";
             for (size_t i = 0; i < sorted.size() && i < 8; ++i)
                 std::cout << " " << (sorted[i].second * 1000 / std::max<uint64_t>(other.busy, 1)) / 10.0 << "% " << sorted[i].first << ";";
+            std::cout << std::endl;
+            // And where it waits (functions on its blocked stacks, shares of all its samples).
+            std::unordered_map<std::string, uint64_t> waits;
+            for (const auto &stack : other.idleStacks)
+            {
+                std::unordered_set<std::string> seen;
+                for (const uint64_t address : stack)
+                {
+                    if (address == 0)
+                        break;
+                    const std::string name = symbolOf(address);
+                    if (seen.insert(name).second)
+                        ++waits[name];
+                }
+            }
+            std::vector<std::pair<std::string, uint64_t>> waitSorted(waits.begin(), waits.end());
+            std::sort(waitSorted.begin(), waitSorted.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+            std::cout << "[vp2s-prof] thread " << id << " waits:";
+            for (size_t i = 0; i < waitSorted.size() && i < 14; ++i)
+                std::cout << " " << (waitSorted[i].second * 1000 / std::max<uint64_t>(other.total, 1)) / 10.0 << "% "
+                          << waitSorted[i].first << ";";
             std::cout << std::endl;
         }
     }

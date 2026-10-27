@@ -159,10 +159,6 @@ namespace
             const std::string file = "vp2s_shot_" + std::to_string(diag.manualShot++) + ".png";
             std::cout << "[vp2s] " << (saveGameFrame(runtime, file) ? "saved " : "no frame for ") << file << std::endl;
         }
-        if (!diag.enabled)
-        {
-            return;
-        }
         uint32_t frameWidth = 0;
         uint32_t frameHeight = 0;
         if (runtime.gs().copyLatchedHostPresentationFrame(diag.framePixels, frameWidth, frameHeight) &&
@@ -181,7 +177,12 @@ namespace
             {
                 ++diag.distinctFrames;
                 diag.lastFrameHash = hash;
+                runtime.noteGameFrame(); // the fps overlay's frame count (PS2X_SHOW_FPS, F3)
             }
+        }
+        if (!diag.enabled)
+        {
+            return;
         }
         if (++diag.frame % kDiagIntervalFrames != 0)
         {
@@ -443,6 +444,9 @@ int main(int argc, char *argv[])
         setDefault("PS2X_GS_LAG", "1");
         setDefault("PS2X_GS_RENDERER", "parallel");
         setDefault("PS2X_IOP_THREAD", "1");
+        // The fps and EE-speed counter at the top right (F3 hides it; PS2X_SHOW_FPS=0 starts hidden). VP2 redraws
+        // one display buffer, so the frames counted are the distinct pictures shown (drawDiagnostics).
+        setDefault("PS2X_SHOW_FPS", "1");
         PS2Runtime runtime;
 
         Diagnostics diagnostics;
@@ -453,11 +457,10 @@ int main(int argc, char *argv[])
 #else
         constexpr bool kDebugUi = false;
 #endif
-        if (diagnostics.enabled || kDebugUi)
-        {
-            // The init callback must be set before initialize() for the draw callback to run.
-            runtime.setDebugUiCallbacks(&initDiagnostics, &drawDiagnostics, &shutdownDiagnostics, &diagnostics);
-        }
+        // Always: the draw callback counts the distinct frames shown for the fps overlay and handles F9; the
+        // diagnostics proper only run with VP2S_DIAG. The init callback must be set before initialize().
+        (void)kDebugUi;
+        runtime.setDebugUiCallbacks(&initDiagnostics, &drawDiagnostics, &shutdownDiagnostics, &diagnostics);
 
         if (!runtime.initialize("Valkyrie Profile 2: Silmeria | VP2S_Recomp"))
         {
