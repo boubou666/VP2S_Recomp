@@ -2,7 +2,9 @@
 
 #include "game_overrides.h"
 #include "ps2_runtime.h"
+#include "runtime/ee_scheduler.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -50,6 +52,16 @@ namespace
     void applyVp2s(PS2Runtime &runtime)
     {
         runtime.configureReservedMemory(kReservedBase, kReservedTop, kHeapLimit);
+
+        // VP2 waits for its vblank by spinning on a counter in FUN_0011f520 (main thread, 0x11f520-0x11f5b4), never in
+        // the kernel: tell the scheduler, or it takes the picture only every third vblank (16 fps shown in towns
+        // where the game draws ~45). VP2S_VBLANK_HOLD=1 also holds a vblank while the frame is still being drawn.
+        {
+            const char *hold = std::getenv("VP2S_VBLANK_HOLD");
+            runtime.eeScheduler().setGuestFrameWait(1, 0x0011F520u, 0x0011F5B4u, hold && hold[0] == '1');
+            if (const char *limit = std::getenv("VP2S_VBLANK_HOLD_US"))
+                runtime.eeScheduler().setVBlankHoldLimit(std::chrono::microseconds(std::strtoul(limit, nullptr, 10)));
+        }
 
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         paths.cdImage = findDiscImage(paths.elfDirectory);

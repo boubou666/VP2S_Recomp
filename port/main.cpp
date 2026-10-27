@@ -451,6 +451,10 @@ int main(int argc, char *argv[])
         // PS2X_GS_PIXEL_CYCLES / PS2X_GS_PRIM_CYCLES set the model back (256 / 32 by default in the runtime).
         setDefault("PS2X_GS_PIXEL_CYCLES", "0");
         setDefault("PS2X_GS_PRIM_CYCLES", "0");
+        // Relaxed VIF1 timing: the EE no longer stops at the start of every microprogram the VIF1 worker runs, so the
+        // two threads overlap; the worker's SIGNAL/FINISH may reach the EE later in EE time. Logun 72% -> 100% speed.
+        // PS2X_VIF1_SLACK=0 brings back the lockstep, a smaller value bounds how far the EE may run ahead (EE cycles).
+        setDefault("PS2X_VIF1_SLACK", "1000000000000");
         // The fps and EE-speed counter at the top right (F3 hides it; PS2X_SHOW_FPS=0 starts hidden). VP2 redraws
         // one display buffer, so the frames counted are the distinct pictures shown (drawDiagnostics).
         setDefault("PS2X_SHOW_FPS", "1");

@@ -24,7 +24,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ## Status
 
-**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the chapter 1 cutscenes with their subtitled dialogue, up to the port of Logun, where Alicia walks around and the town's prompts (talk, exits) appear. The first field scene runs at 50 VSync/s; the town at about half speed.
+**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the chapter 1 cutscenes with their subtitled dialogue, up to the port of Logun, where Alicia walks around and the town's prompts (talk, exits) appear. The first field scene runs at 50 VSync/s; the town of Logun at full speed (49 VSync/s) with about 43 distinct pictures per second.
 
 | Milestone | |
 |---|:---:|
@@ -39,7 +39,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 | New Game: chapter title card, first field cutscene with subtitles | ✅ |
 | Field 3D rendering | ✅ |
 | Chapter 1 cutscenes up to Logun; Alicia controllable in the town | ✅ |
-| Field and town at full speed | 🔧 |
+| Field and town at full speed | ✅ |
 | Exploration, battles, menus, saving | 🔧 |
 | Widescreen, higher resolution | ⏳ |
 
@@ -136,6 +136,8 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 | `VP2S_GS_SYNC=1` | Rasterize on the game thread instead of the GS worker threads |
 | `PS2X_VIF1_THREAD=0`, `PS2X_GS_LAG=0` | Run VIF1 and the VU1 microprograms on the game thread (by default a worker thread with its own clock runs them: about 12% faster on the field) |
 | `PS2X_GS_PIXEL_CYCLES=256`, `PS2X_GS_PRIM_CYCLES=32` | Model the GS drawing time again (VP2S sets both to 0: the GS events reach the game as soon as a frame is submitted, which keeps the GPU renderer from holding the game back; about 25% faster in towns) |
+| `PS2X_VIF1_SLACK=0` | Run the EE in lockstep with the VIF1 worker again (VP2S lets the EE run ahead of it: the two overlap and the town reaches full speed; a smaller value bounds the lead in EE cycles) |
+| `VP2S_VBLANK_HOLD=1` | Hold a vblank (up to 6 ms, `VP2S_VBLANK_HOLD_US`) while VP2 is still drawing its frame |
 | `PS2X_SHOW_FPS=0` | Start with the fps and EE speed counter hidden (F3 toggles it) |
 | `PS2X_IOP_THREAD=0` | Run the IOP on the game thread (by default it has a thread of its own: about 7% faster on the field) |
 | `PS2X_GS_RENDERER=cpu` | Draw with the CPU rasterizer. By default the GS runs on the GPU with [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) (Vulkan compute; the CPU rasterizer if Vulkan is unavailable): about 50% faster on the field |
@@ -152,7 +154,7 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 
 ## Known issues
 
-- **Not at full speed yet:** the first field scene runs at 50 VSync/s, the town of Logun at about 23 (half speed).
+- **Frame rate:** the first field scene runs at 50 VSync/s, the town of Logun at 49 VSync/s with about 43 distinct pictures per second.
 - **Not reached yet:** battles, menus and saving (first tests reach Logun in chapter 1).
 
 ## Repository layout
