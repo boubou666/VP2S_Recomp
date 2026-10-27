@@ -164,7 +164,8 @@ namespace
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - diag.start).count();
         const uint64_t vsyncs = runtime.eeScheduler().currentVSyncTick();
         std::cout << "[vp2s-diag] frame " << diag.frame << " t=" << static_cast<int>(seconds) << "s vsync=" << vsyncs
-                  << " (" << static_cast<int>(vsyncs / std::max(seconds, 1.0)) << "/s)" << std::hex << ": pc=0x" << cpu.pc
+                  << " (" << static_cast<int>(vsyncs / std::max(seconds, 1.0)) << "/s) flips="
+                  << runtime.gsForPresentation().displayFlips() << std::hex << ": pc=0x" << cpu.pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[31]))
                   << " sp=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[29])) << std::dec;
         if (cpu.pc == 0u)

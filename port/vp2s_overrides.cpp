@@ -40,8 +40,10 @@ namespace
     // The game uses nearly all user RAM: its heap runs from the end of the overlay area
     // (0x549100) up to the main thread stack (0x1FF0000), where the runtime keeps its HLE
     // pools and invocation stacks by default. Move those into the HLE-unused kernel memory
-    // below the ELF and let a rest-of-RAM heap reach the stack, as on the console.
-    constexpr uint32_t kReservedBase = 0x00080000u;
+    // below the ELF and let a rest-of-RAM heap reach the stack, as on the console. The range starts at 64 KiB:
+    // past the 256 KiB of HLE pools it holds the 16 KiB invocation stacks the scheduler keeps per thread and nesting
+    // depth, and from 0x80000 it fitted only 16 of them (the scene after the first field skip ran out).
+    constexpr uint32_t kReservedBase = 0x00010000u;
     constexpr uint32_t kReservedTop = 0x00100000u;
     constexpr uint32_t kHeapLimit = 0x01FF0000u;
 
