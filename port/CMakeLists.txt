@@ -126,7 +126,8 @@ ps2x_stage_ffmpeg_runtime_dlls(vp2s) # no-op without FFmpeg
 if(MSVC)
     # Public symbols in vp2s.pdb (no /Zi needed) for the VP2S_PROFILE sampler: only relinks.
     # /CGTHREADS: the runtime is compiled /GL, so each link generates its code (4 threads by default).
-    target_link_options(vp2s PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /CGTHREADS:16)
+    # /LTCG:INCREMENTAL: a relink regenerates only the runtime functions that changed (it was ~2.5 min each time).
+    target_link_options(vp2s PRIVATE /DEBUG /OPT:REF /OPT:ICF /INCREMENTAL:NO /CGTHREADS:16 /LTCG:INCREMENTAL)
     target_link_libraries(vp2s PRIVATE dbghelp winmm)
     # Large recompiled functions get huge MSVC frames (up to ~550 KB: one stack slot per SIMD
     # temporary), and guest calls nest as host calls on the game thread. With the default 1 MB
@@ -165,11 +166,11 @@ set_target_properties(vp2s PROPERTIES
 )
 
 set(VP2S_RUNTIME_INCLUDE "${VP2S_FORK}/ps2xRuntime/include")
+# Only the recomp ABI headers the generated code includes (not ps2_runtime.h): a runtime header change then leaves
+# the precompiled header, and so the ~470 unity groups of generated code, untouched.
 target_precompile_headers(vp2s PRIVATE
     "${VP2S_RUNTIME_INCLUDE}/ps2_runtime_macros.h"
-    "${VP2S_RUNTIME_INCLUDE}/ps2_runtime.h"
-    "${VP2S_RUNTIME_INCLUDE}/ps2_syscalls.h"
-    "${VP2S_RUNTIME_INCLUDE}/ps2_stubs.h"
+    "${VP2S_RUNTIME_INCLUDE}/ps2_recomp_calls.h"
 )
 
 if(MSVC)
