@@ -57,6 +57,10 @@ namespace
         int frame = 0;
         int shot = 0;
         int manualShot = 0;
+        // Distinct presented frames (the game's own frame rate: VP2 redraws one display buffer, so no flips).
+        uint64_t distinctFrames = 0;
+        uint64_t lastFrameHash = 0;
+        std::vector<uint8_t> framePixels;
         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 #if defined(PS2X_ENABLE_DEBUG_UI)
         PS2DebugPanel panel;
@@ -155,7 +159,31 @@ namespace
             const std::string file = "vp2s_shot_" + std::to_string(diag.manualShot++) + ".png";
             std::cout << "[vp2s] " << (saveGameFrame(runtime, file) ? "saved " : "no frame for ") << file << std::endl;
         }
-        if (!diag.enabled || ++diag.frame % kDiagIntervalFrames != 0)
+        if (!diag.enabled)
+        {
+            return;
+        }
+        uint32_t frameWidth = 0;
+        uint32_t frameHeight = 0;
+        if (runtime.gs().copyLatchedHostPresentationFrame(diag.framePixels, frameWidth, frameHeight) &&
+            diag.framePixels.size() >= 4u)
+        {
+            // FNV-1a over a sparse sample of pixels: enough to tell a redrawn frame from a repeated one.
+            uint64_t hash = 1469598103934665603ull;
+            const size_t words = diag.framePixels.size() / 4u;
+            for (size_t index = 0; index < words; index += 61u)
+            {
+                uint32_t word = 0;
+                std::memcpy(&word, diag.framePixels.data() + index * 4u, sizeof(word));
+                hash = (hash ^ word) * 1099511628211ull;
+            }
+            if (hash != diag.lastFrameHash)
+            {
+                ++diag.distinctFrames;
+                diag.lastFrameHash = hash;
+            }
+        }
+        if (++diag.frame % kDiagIntervalFrames != 0)
         {
             return;
         }
@@ -165,7 +193,7 @@ namespace
         const uint64_t vsyncs = runtime.eeScheduler().currentVSyncTick();
         std::cout << "[vp2s-diag] frame " << diag.frame << " t=" << static_cast<int>(seconds) << "s vsync=" << vsyncs
                   << " (" << static_cast<int>(vsyncs / std::max(seconds, 1.0)) << "/s) flips="
-                  << runtime.gsForPresentation().displayFlips() << std::hex << ": pc=0x" << cpu.pc
+                  << runtime.gsForPresentation().displayFlips() << " frames=" << diag.distinctFrames << std::hex << ": pc=0x" << cpu.pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[31]))
                   << " sp=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[29])) << std::dec;
         if (cpu.pc == 0u)

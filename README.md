@@ -24,7 +24,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ## Status
 
-**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the first field cutscene with its subtitled dialogue. The field scene renders correctly, but runs at about 45 VSync/s.
+**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the chapter 1 cutscenes with their subtitled dialogue, up to the port of Logun, where Alicia walks around and the town's prompts (talk, exits) appear. The first field scene runs at 50 VSync/s; the town at about half speed.
 
 | Milestone | |
 |---|:---:|
@@ -38,8 +38,9 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 | Opening movie (MPEG-2 decoded with FFmpeg) | ✅ |
 | New Game: chapter title card, first field cutscene with subtitles | ✅ |
 | Field 3D rendering | ✅ |
-| Field at full speed | 🔧 |
-| Exploration, battles, menus, saving | ⏳ |
+| Chapter 1 cutscenes up to Logun; Alicia controllable in the town | ✅ |
+| Field and town at full speed | 🔧 |
+| Exploration, battles, menus, saving | 🔧 |
 | Widescreen, higher resolution | ⏳ |
 
 ✅ works · 🔧 in progress · ⏳ not reached yet
@@ -148,8 +149,8 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 
 ## Known issues
 
-- **The field is not at full speed yet:** about 45 VSync/s instead of 50. The game thread and the VU1 thread are both busy about 70% of the time.
-- **Not reached yet:** everything after the first field cutscene.
+- **Not at full speed yet:** the first field scene runs at 50 VSync/s, the town of Logun at about 23 (half speed).
+- **Not reached yet:** battles, menus and saving (first tests reach Logun in chapter 1).
 
 ## Repository layout
 

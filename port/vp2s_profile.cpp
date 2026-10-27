@@ -38,6 +38,7 @@ namespace
         uint64_t busy = 0;
         std::unordered_map<uint64_t, uint64_t> leaf;      // address -> samples
         std::vector<std::array<uint64_t, kMaxFrames>> stacks;
+        std::vector<std::array<uint64_t, kMaxFrames>> idleStacks; // blocked in a wait: what it waits from
     };
 
     size_t unwindStack(CONTEXT context, uint64_t *frames, size_t maxFrames)
@@ -190,6 +191,23 @@ namespace
         std::cout << "[vp2s-prof] busiest thread " << busiest << " (" << samples.busy << " samples)" << std::endl;
         printTop("exclusive", exclusive, samples.busy);
         printTop("inclusive", inclusive, samples.busy);
+        // Where it waits: the functions on its blocked stacks, as shares of all its samples.
+        std::unordered_map<std::string, uint64_t> idle;
+        for (const auto &stack : samples.idleStacks)
+        {
+            std::unordered_set<std::string> seen;
+            for (const uint64_t address : stack)
+            {
+                if (address == 0)
+                    break;
+                auto it = names.find(address);
+                if (it == names.end())
+                    it = names.emplace(address, symbolOf(address)).first;
+                if (seen.insert(it->second).second)
+                    ++idle[it->second];
+            }
+        }
+        printTop("waiting in", idle, samples.total);
 
         // Other threads busy over 30% of the time (e.g. GS raster workers): their top functions.
         for (auto &[id, other] : threads)
@@ -378,6 +396,7 @@ namespace
                 ++samples.total;
                 if (isIdleLeaf(frames[0]))
                 {
+                    samples.idleStacks.push_back(frames);
                     continue;
                 }
                 ++samples.busy;
