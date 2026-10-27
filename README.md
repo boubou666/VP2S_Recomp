@@ -135,6 +135,7 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 | `VP2S_HANG_DUMP=<seconds>` | If the display freezes that long, write every host thread's stack to `vp2s_hang.txt`; also on stack overflow |
 | `VP2S_GS_SYNC=1` | Rasterize on the game thread instead of the GS worker threads |
 | `PS2X_VIF1_THREAD=0`, `PS2X_GS_LAG=0` | Run VIF1 and the VU1 microprograms on the game thread (by default a worker thread with its own clock runs them: about 12% faster on the field) |
+| `PS2X_GS_PIXEL_CYCLES=256`, `PS2X_GS_PRIM_CYCLES=32` | Model the GS drawing time again (VP2S sets both to 0: the GS events reach the game as soon as a frame is submitted, which keeps the GPU renderer from holding the game back; about 25% faster in towns) |
 | `PS2X_SHOW_FPS=0` | Start with the fps and EE speed counter hidden (F3 toggles it) |
 | `PS2X_IOP_THREAD=0` | Run the IOP on the game thread (by default it has a thread of its own: about 7% faster on the field) |
 | `PS2X_GS_RENDERER=cpu` | Draw with the CPU rasterizer. By default the GS runs on the GPU with [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) (Vulkan compute; the CPU rasterizer if Vulkan is unavailable): about 50% faster on the field |

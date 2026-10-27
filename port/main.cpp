@@ -133,7 +133,7 @@ namespace
         std::vector<uint8_t> pixels;
         uint32_t width = 0;
         uint32_t height = 0;
-        if (!runtime.gs().copyLatchedHostPresentationFrame(pixels, width, height) ||
+        if (!runtime.gsForPresentation().copyLatchedHostPresentationFrame(pixels, width, height) ||
             pixels.size() < static_cast<size_t>(width) * height * 4u)
         {
             return false;
@@ -161,7 +161,7 @@ namespace
         }
         uint32_t frameWidth = 0;
         uint32_t frameHeight = 0;
-        if (runtime.gs().copyLatchedHostPresentationFrame(diag.framePixels, frameWidth, frameHeight) &&
+        if (runtime.gsForPresentation().copyLatchedHostPresentationFrame(diag.framePixels, frameWidth, frameHeight) &&
             diag.framePixels.size() >= 4u)
         {
             // FNV-1a over a sparse sample of pixels: enough to tell a redrawn frame from a repeated one.
@@ -445,6 +445,12 @@ int main(int argc, char *argv[])
         setDefault("PS2X_GS_LAG", "1");
         setDefault("PS2X_GS_RENDERER", "parallel");
         setDefault("PS2X_IOP_THREAD", "1");
+        // Relaxed GS timing: with the GS lag, SIGNAL/FINISH reach the EE once the modelled drawing time of what came
+        // before has passed; VP2 polls FINISH every frame, so the model held the EE back for nothing on a GPU that draws
+        // far faster. At 0 the events come as the worker submits the frame: Logun 57% -> 72% of real-time speed.
+        // PS2X_GS_PIXEL_CYCLES / PS2X_GS_PRIM_CYCLES set the model back (256 / 32 by default in the runtime).
+        setDefault("PS2X_GS_PIXEL_CYCLES", "0");
+        setDefault("PS2X_GS_PRIM_CYCLES", "0");
         // The fps and EE-speed counter at the top right (F3 hides it; PS2X_SHOW_FPS=0 starts hidden). VP2 redraws
         // one display buffer, so the frames counted are the distinct pictures shown (drawDiagnostics).
         setDefault("PS2X_SHOW_FPS", "1");
