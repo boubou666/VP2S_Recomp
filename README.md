@@ -44,6 +44,17 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ✅ works · 🔧 in progress · ⏳ not reached yet
 
+### Screenshots
+
+Captured from `vp2s.exe` (PAL release, French text).
+
+| | |
+|:---:|:---:|
+| ![Title screen](docs/screenshots/title.jpg) | ![Field: the town gate](docs/screenshots/field_arch.jpg) |
+| Title screen | First field scene: the town gate |
+| ![Field: Alicia in the town](docs/screenshots/field_town.jpg) | ![Field: subtitled dialogue](docs/screenshots/field_dialogue.jpg) |
+| Alicia in the town | Subtitled dialogue |
+
 [docs/RECOMPILER.md](docs/RECOMPILER.md) records what works, every fix and how it was found, and what remains open. [docs/AUDIT.md](docs/AUDIT.md) is the initial feasibility audit: disc layout, overlay modules, compression and encryption formats, VU microcode.
 
 ## Goal
