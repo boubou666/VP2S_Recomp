@@ -398,6 +398,8 @@ int main(int argc, char *argv[])
         // The GS on the GPU (paraLLEl-GS, Vulkan compute; the CPU rasterizer if Vulkan is unavailable): the field's
         // post-processing passes kept the CPU rasterizer at about 24 VSync/s, 36 on the GPU. PS2X_GS_RENDERER=cpu
         // (any other value) keeps the CPU rasterizer.
+        // The IOP on its own thread (the EE thread spent about a fifth of its time running the IOP): about 7% more
+        // VSync/s on the field, no SPU2 underruns. PS2X_IOP_THREAD=0 runs it on the EE thread.
         const auto setDefault = [](const char *name, const char *value)
         {
             if (std::getenv(name))
@@ -411,6 +413,7 @@ int main(int argc, char *argv[])
         setDefault("PS2X_VIF1_THREAD", "1");
         setDefault("PS2X_GS_LAG", "1");
         setDefault("PS2X_GS_RENDERER", "parallel");
+        setDefault("PS2X_IOP_THREAD", "1");
         PS2Runtime runtime;
 
         Diagnostics diagnostics;
@@ -434,7 +437,7 @@ int main(int argc, char *argv[])
         }
         std::cout << "[vp2s] VIF1 worker thread " << (runtime.memory().vif1Threaded() ? "on" : "off") << ", GS lag "
                   << (runtime.memory().gsLag() ? "on" : "off") << ", GS renderer " << std::getenv("PS2X_GS_RENDERER")
-                  << std::endl;
+                  << ", IOP thread " << (runtime.iopThreaded() ? "on" : "off") << std::endl;
         if (!runtime.loadELF(elf.string()))
         {
             std::cerr << "Failed to load ELF file: " << elf.string() << std::endl;
