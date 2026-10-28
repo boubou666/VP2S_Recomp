@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 // The object a run of program 0x0880 draws, decoded from VU1 data memory (docs/vp2_vu1.md, checked against recorded
 // runs with tools/vp2_mesh_proto.py and vp2s_hle_check):
@@ -297,7 +300,7 @@ namespace
 }
 
 bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1State &state, uint32_t top,
-                         std::vector<uint8_t> &packet)
+                         std::vector<uint8_t> &packet, Vp2sNativeMesh *native)
 {
     const Layout layout = findLayout(code);
     if (!layout.valid)
@@ -327,6 +330,15 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
     uint32_t v = top + static_cast<uint32_t>(mem.i(top, 1));
 
     packet.clear();
+    if (native)
+    {
+        native->triangles.clear();
+        native->prim = (tagY >> 15) & 0x7FFu; // the strip tag's PRIM (PRE set)
+        for (int c = 0; c < 4; ++c)
+            for (int r = 0; r < 4; ++r)
+                native->matrix[4 * c + r] = screen[c][r];
+    }
+    ps2x::native::Vertex strip[3];
     for (int32_t s = 0; s < strips; ++s)
     {
         const uint32_t count = static_cast<uint32_t>(mem.i(lengths + static_cast<uint32_t>(s), 0)) & 0xFFFFu;
@@ -365,8 +377,30 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
                 const double f = std::max(0.0, std::min(static_cast<double>(fog[2]) + static_cast<double>(fog[3]) * qd, 255.0));
                 w = static_cast<uint32_t>(ftoi(f * 16.0));
             }
+            const uint32_t fogW = w; // before ADC: the vertex still serves the strip's next triangles
             if (adc)
                 w = 0x8FF0u;
+            if (native)
+            {
+                // The vertex as the native renderer takes it: object space with the screen matrix, the texture
+                // coordinates before the divide by w, the lit colour, the fog factor (1 keeps the colour).
+                ps2x::native::Vertex nv;
+                nv.x = p[0];
+                nv.y = p[1];
+                nv.z = p[2];
+                nv.u = u;
+                nv.v = t;
+                uint32_t rgba = 0;
+                for (uint32_t ch = 0; ch < 4u; ++ch)
+                    rgba |= static_cast<uint32_t>(std::clamp(mem.i(v + 2u, ch), 0, 255)) << (8u * ch);
+                nv.rgba = rgba;
+                nv.fog = fogOn ? static_cast<float>((fogW >> 4) & 0xFFu) / 255.0f : 1.0f;
+                strip[0] = strip[1];
+                strip[1] = strip[2];
+                strip[2] = nv;
+                if (k >= 2u && !adc)
+                    native->triangles.insert(native->triangles.end(), strip, strip + 3);
+            }
             put32(packet, static_cast<uint32_t>(ftoi(x * 16.0)), static_cast<uint32_t>(ftoi(y * 16.0)),
                   static_cast<uint32_t>(ftoi(z * 16.0)), w);
         }
@@ -374,13 +408,91 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
     return strips > 0;
 }
 
+namespace
+{
+    // The renderer's frame is built on the VIF1 worker (the objects) and ended on the EE thread (the frame wait).
+    std::mutex g_nativeMutex;
+    uint64_t g_nativeGroup = 0;
+    bool g_nativeStarted = false;
+
+    ps2x::native::Screen nativeScreen()
+    {
+        ps2x::native::Screen screen;
+        screen.gsZScale = 16.0f; // the microprogram writes FTOI4 Z
+        return screen;
+    }
+
+    // Caller holds g_nativeMutex: the renderer draws in the GS stream, and a frame is being built.
+    void ensureNativeStarted()
+    {
+        if (g_nativeStarted)
+            return;
+        ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
+        renderer.setStreamDraws(true);
+        renderer.setEnabled(true);
+        renderer.beginFrame(nativeScreen());
+        g_nativeStarted = true;
+    }
+}
+
+bool vp2sNativeMeshEnabled()
+{
+    static const bool on = [] { const char *v = std::getenv("VP2S_NATIVE_MESH"); return v && v[0] == '1'; }();
+    return on;
+}
+
+void vp2sNativeMeshFrameEnd()
+{
+    if (!vp2sNativeMeshEnabled())
+        return;
+    std::lock_guard<std::mutex> lock(g_nativeMutex);
+    ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
+    if (!g_nativeStarted)
+    {
+        ensureNativeStarted();
+        return;
+    }
+    renderer.endFrame();
+    renderer.beginFrame(nativeScreen());
+}
+
 bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
 {
     if (run.startPc != 0x0880u || !run.code || !run.data || !run.state || !run.kick)
         return false;
     thread_local std::vector<uint8_t> packet;
-    if (!vp2sBuildMeshPacket(run.code, run.data, *run.state, run.top, packet))
+    thread_local Vp2sNativeMesh mesh;
+    const bool native = vp2sNativeMeshEnabled() && run.nativeDraw;
+    if (!vp2sBuildMeshPacket(run.code, run.data, *run.state, run.top, packet, native ? &mesh : nullptr))
         return false;
-    run.kick(run.user, packet.data(), static_cast<uint32_t>(packet.size()));
+    static int s_logged = 0;
+    if (native && s_logged < 12 && std::getenv("VP2S_NATIVE_MESH_LOG"))
+    {
+        ++s_logged;
+        std::fprintf(stderr, "[vp2s-native] prim %#x, %zu vertices\n", mesh.prim, mesh.triangles.size());
+    }
+    // Triangle strips only (PRIM type 4): anything else still goes to the GS as packets.
+    if (!native || (mesh.prim & 7u) != 4u)
+    {
+        run.kick(run.user, packet.data(), static_cast<uint32_t>(packet.size()));
+        return true;
+    }
+    ps2x::native::Material material;
+    material.fromGsContext = true;
+    material.textured = (mesh.prim >> 4) & 1u; // TME
+    material.fog = (mesh.prim >> 5) & 1u;      // FGE
+    material.alphaBlend = (mesh.prim >> 6) & 1u; // ABE
+    uint64_t group = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_nativeMutex);
+        ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
+        ensureNativeStarted();
+        if (mesh.triangles.empty())
+            return true; // everything culled: nothing to draw
+        group = ++g_nativeGroup;
+        renderer.beginGroup(group);
+        renderer.draw(material, mesh.matrix, mesh.triangles.data(), static_cast<uint32_t>(mesh.triangles.size()));
+    }
+    run.nativeDraw(run.nativeUser, group, (mesh.prim >> 9) & 1u); // CTXT
     return true;
 }

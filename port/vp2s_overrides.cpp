@@ -249,6 +249,16 @@ namespace
         g_moduleInit(rdram, ctx, runtime);
     }
 
+    // VP2S_NATIVE_MESH=1: the native renderer's frame ends where the game waits for its frame (FUN_0011f520 count 0).
+    PS2Runtime::RecompiledFunction g_frameWait = nullptr;
+
+    void nativeMeshFrameWait(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (static_cast<int32_t>(reg(ctx, 5)) == 0)
+            vp2sNativeMeshFrameEnd();
+        g_frameWait(rdram, ctx, runtime);
+    }
+
     // VP2S_HOOK_TRACE=<address>[,<address>...]: prints a0..a3 and ra of the first 40 calls of each function.
     std::unordered_map<uint32_t, std::pair<PS2Runtime::RecompiledFunction, uint32_t>> g_traced;
 
@@ -315,6 +325,14 @@ namespace
             runtime.replaceFunction(kElapsedVBlanks, &nativeElapsed);
             std::cout << "[vp2s] native loop: frames paced by the host (cap " << runtime.framePacer().cap()
                       << " fps, 0 = unlimited), real-time step" << std::endl;
+        }
+
+        if (vp2sNativeMeshEnabled())
+        {
+            g_frameWait = runtime.lookupFunction(kFrameWait); // the native loop's replacement when it is on
+            if (g_frameWait)
+                runtime.replaceFunction(kFrameWait, &nativeMeshFrameWait);
+            std::cout << "[vp2s] native meshes: VP2's objects drawn by the native renderer" << std::endl;
         }
 
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
