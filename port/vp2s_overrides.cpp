@@ -3,6 +3,7 @@
 #include "game_overrides.h"
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
+#include "vp2s_vu1_hle.h"
 
 #include <algorithm>
 #include <chrono>
@@ -174,6 +175,14 @@ namespace
             runtime.eeScheduler().setGuestFrameWait(1, 0x0011F520u, 0x0011F5B4u, hold && hold[0] == '1');
             if (const char *limit = std::getenv("VP2S_VBLANK_HOLD_US"))
                 runtime.eeScheduler().setVBlankHoldLimit(std::chrono::microseconds(std::strtoul(limit, nullptr, 10)));
+        }
+
+        // VP2S_VU1_HLE=1: the mesh microprogram (pc 0x0880) done natively, VU1 only for what it does not do yet
+        // (vp2s_vu1_hle.cpp, docs/vp2_vu1.md).
+        if (const char *hle = std::getenv("VP2S_VU1_HLE"); hle && hle[0] == '1')
+        {
+            ps2x::native::setVu1Hle(&vp2sVu1Hle);
+            std::cout << "[vp2s] VU1 mesh program done natively" << std::endl;
         }
 
         if (const char *native = std::getenv("VP2S_NATIVE"); native && native[0] == '1')

@@ -58,6 +58,7 @@ endif()
 add_library(vp2s_frontend OBJECT
     "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_overrides.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_vu1_hle.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_iop.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_gs.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
@@ -75,6 +76,10 @@ if(VP2S_DEBUG_UI)
     target_link_libraries(vp2s_frontend PRIVATE rlImGui imgui)
     target_compile_definitions(vp2s_frontend PRIVATE PS2X_ENABLE_DEBUG_UI=1)
 endif()
+
+# The native version of VP2's mesh microprogram checked against recorded VU1 runs (docs/vp2_vu1.md).
+add_executable(vp2s_hle_check "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_hle_check.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_vu1_hle.cpp")
+target_link_libraries(vp2s_hle_check PRIVATE ps2_runtime)
 
 add_executable(vp2s ${VP2S_GENERATED_SOURCES})
 target_include_directories(vp2s PRIVATE ${VP2S_GENERATED_DIRS})
