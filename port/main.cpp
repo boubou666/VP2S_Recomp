@@ -266,6 +266,11 @@ namespace
                       << t2.compare << " backlog=" << t2.compareBacklog << "/" << t2.overflowBacklog << " intc enabled=0x"
                       << kernel.enabledIntcMask << " pending=0x" << kernel.pendingIntcMask << std::dec
                       << " invocations=" << kernel.pendingInvocations << (kernel.heldUntilEi ? " held-until-EI" : "")
+                      << std::hex << " dmac enabled=0x" << kernel.enabledDmacMask << " pending=0x"
+                      << kernel.pendingDmacMask << " handlers:";
+            for (const EeIrqHandler &h : kernel.dmacHandlers)
+                std::cout << " " << h.cause << "->0x" << h.handler << (h.enabled ? "" : "(off)");
+            std::cout << std::dec
                       << std::hex << " | counters ovf=0x" << rd64(kTimerManager) << " +8=0x" << rd32(kTimerManager + 8)
                       << " +10=0x" << rd32(kTimerManager + 0x10) << " free=0x" << rd32(kTimerManager + 0x14)
                       << " current=0x" << rd32(kTimerManager + 0x1c) << " list:";

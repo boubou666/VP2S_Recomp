@@ -22,6 +22,57 @@ void printGsDiagnostics(PS2Runtime &runtime)
               << " DISPLAY2=0x" << regs.display2 << " BGCOLOR=0x" << regs.bgcolor << " CSR=0x" << regs.csr.load()
               << std::dec << " gifCopySeen=" << runtime.memory().hasSeenGifCopy() << std::endl;
 
+    // DMA channels the game's GIF queue depends on (GIF = ch2, VIF1 = ch1), and that queue itself (object at
+    // *0x35dd78: +8 size, +A head, +C tail = head + 1 once the DMA end handler drained it, +E busy).
+    PS2Memory &mem = runtime.memory();
+    std::cout << std::hex << "[vp2s-gs]   dma: gif chcr=0x" << mem.readIORegister(0x1000A000u) << " madr=0x"
+              << mem.readIORegister(0x1000A010u) << " qwc=0x" << mem.readIORegister(0x1000A020u) << " tadr=0x"
+              << mem.readIORegister(0x1000A030u) << " | vif1 chcr=0x" << mem.readIORegister(0x10009000u)
+              << " qwc=0x" << mem.readIORegister(0x10009020u) << " | d_stat=0x" << mem.readIORegister(0x1000E010u)
+              << " d_pcr=0x" << mem.readIORegister(0x1000E020u) << std::dec;
+    if (const uint8_t *rdram = mem.getRDRAM())
+    {
+        uint32_t queue = 0;
+        std::memcpy(&queue, rdram + 0x35DD78u, 4u);
+        if (queue >= 0x100000u && queue + 16u <= PS2_RAM_SIZE)
+        {
+            int16_t size, head, tail;
+            std::memcpy(&size, rdram + queue + 8u, 2u);
+            std::memcpy(&head, rdram + queue + 10u, 2u);
+            std::memcpy(&tail, rdram + queue + 12u, 2u);
+            std::cout << " | gif queue 0x" << std::hex << queue << std::dec << " size=" << size << " head=" << head
+                      << " tail=" << tail << " busy=" << int(rdram[queue + 14u]) << " +f=" << int(rdram[queue + 15u]);
+            // Entries (16 bytes at *(queue + 4)): +0 kind, +2 flags, +4 data, +C callback object.
+            uint32_t entries = 0;
+            std::memcpy(&entries, rdram + queue + 4u, 4u);
+            for (int k = 0; k < 2 && size > 0 && entries >= 0x100000u && entries + 16u * size <= PS2_RAM_SIZE; ++k)
+            {
+                const uint32_t at = entries + 16u * static_cast<uint32_t>((head + k) % size);
+                uint32_t w[4];
+                std::memcpy(w, rdram + at, 16u);
+                std::cout << std::hex << " [" << std::dec << (head + k) % size << std::hex << "]=" << w[0] << "," << w[1]
+                          << "," << w[2] << "," << w[3] << std::dec;
+            }
+        }
+    }
+    std::cout << std::endl;
+    // The last GIF events, oldest first (PS2Memory::noteGifEvent).
+    uint32_t next = 0;
+    const auto events = mem.gifEvents(next);
+    std::cout << std::hex << "[vp2s-gs]   gif events (" << std::dec << next << "):" << std::hex;
+    for (uint32_t k = next > PS2Memory::kGifEvents ? next - PS2Memory::kGifEvents : 0u; k < next; ++k)
+    {
+        const PS2Memory::GifEvent &e = events[k % PS2Memory::kGifEvents];
+        std::cout << " " << static_cast<char>(e.kind);
+        if (e.kind == 'S')
+            std::cout << e.a << "/" << e.b << "/" << e.c;
+        else if (e.kind == 'X' || e.kind == 'c')
+            std::cout << e.a;
+        else if (e.kind != 'Q')
+            std::cout << e.a << "/" << e.b;
+    }
+    std::cout << std::dec << std::endl;
+
     const GSDebugSnapshot gs = runtime.gs().getDebugSnapshot();
     std::cout << "[vp2s-gs]   present: has=" << gs.hasHostPresentationFrame << " " << gs.hostPresentationWidth << "x"
               << gs.hostPresentationHeight << " displayFbp=" << gs.hostPresentationDisplayFbp
