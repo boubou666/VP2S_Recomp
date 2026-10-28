@@ -286,8 +286,14 @@ namespace
         {
             auto rd32 = [&](uint32_t addr) { uint32_t v; std::memcpy(&v, rdram + (addr & 0x1ffffffu), 4); return v; };
             const uint32_t files = rd32(kGlobal + 8);
-            std::cout << "[vp2s-diag]   boot state+110=" << int(rdram[kGlobal + 0x110]) << std::hex
-                      << " file manager 0x" << files << std::dec;
+            std::cout << "[vp2s-diag]   boot state+110=" << int(rdram[kGlobal + 0x110])
+                      << " bank+354=" << int(rdram[kGlobal + 0x354]) << " +371=" << int(rdram[kGlobal + 0x371])
+                      << " sub+355=" << int(rdram[kGlobal + 0x355]) << " +358=0x" << std::hex << rd32(kGlobal + 0x358)
+                      << " +378=0x" << rd32(kGlobal + 0x378) << " busy+4e4:";
+            for (uint32_t i = 0; i < 0x3cu; ++i)
+                if (rdram[kGlobal + 0x4e4 + i] != 0)
+                    std::cout << ' ' << i << '=' << int(rdram[kGlobal + 0x4e4 + i]);
+            std::cout << " file manager 0x" << files << std::dec;
             if (files >= 0x100000u && files < PS2_RAM_SIZE)
             {
                 const uint32_t table = rd32(files + 0x14);
@@ -458,6 +464,11 @@ int main(int argc, char *argv[])
         // The fps and EE-speed counter at the top right (F3 hides it; PS2X_SHOW_FPS=0 starts hidden). VP2 redraws
         // one display buffer, so the frames counted are the distinct pictures shown (drawDiagnostics).
         setDefault("PS2X_SHOW_FPS", "1");
+        // Slower SPU2 sound RAM transfers. Entering the field sets up reverb (sound RPC 0x1b clears the effect area in
+        // 192 transfers) and asks for its state a frame later (0x1c): 1 while the clear runs, 0 once done, and on 0 the
+        // field starts over. At 1 IOP cycle per word the clear was always over by then on the native loop, which hung
+        // behind a black fade; at 16 it is still running, as on the console.
+        setDefault("PS2X_SPU2_DMA_CYCLES_PER_2BYTES", "16");
         PS2Runtime runtime;
 
         Diagnostics diagnostics;
