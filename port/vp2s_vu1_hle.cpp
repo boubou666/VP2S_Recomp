@@ -407,9 +407,11 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
                 nv.z = p[2];
                 nv.u = u;
                 nv.v = t;
+                // The colour as the GS takes a PACKED RGBAQ: the low 8 bits of each word (an alpha of 0x100 is 0,
+                // which the PCRTC merge reads as "show the other circuit").
                 uint32_t rgba = 0;
                 for (uint32_t ch = 0; ch < 4u; ++ch)
-                    rgba |= static_cast<uint32_t>(std::clamp(mem.i(v + 2u, ch), 0, 255)) << (8u * ch);
+                    rgba |= (static_cast<uint32_t>(mem.i(v + 2u, ch)) & 0xFFu) << (8u * ch);
                 nv.rgba = rgba;
                 nv.fog = fogOn ? static_cast<float>((fogW >> 4) & 0xFFu) / 255.0f : 1.0f;
                 strip[0] = strip[1];
@@ -436,7 +438,10 @@ namespace
     ps2x::native::Screen nativeScreen()
     {
         ps2x::native::Screen screen;
-        screen.gsZScale = 16.0f; // the microprogram writes FTOI4 Z
+        // The microprogram writes FTOI4 Z into XYZF2, whose Z field drops the 4 fraction bits: one GS Z per unit of z/w
+        // (16, as for XYZ2, made every near object the deepest Z of a Z24 buffer: drawn in stream order, over the UI
+        // the game composes with a depth test).
+        screen.gsZScale = 1.0f;
         return screen;
     }
 
