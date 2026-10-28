@@ -170,7 +170,58 @@ def run_setup(run, memory):
     return unknown
 
 
-def run_lighting(run, memory, state):
+def library_layout(code):
+    """Where this build of the microcode library keeps its tables, found by following its code from 0x0880: the
+    BAL at 0x08a8 to the set-up dispatcher, whose IADDIU vi09 gives the set-up table (instruction index) and whose
+    IADDIU vi01, vi01, n give the lighting tables A, B, C, D in that order (D the last). Returns (setup, D) or None."""
+    if code is None:
+        return None
+    lo = struct.unpack_from('<I', code, 0x08a8)[0]
+    if (lo >> 25) & 0x7F != 0x21:
+        return None
+    imm = lo & 0x7FF
+    imm = imm - 0x800 if imm & 0x400 else imm
+    sub = 0x08a8 + 8 + imm * 8
+    setup = None
+    tables = []
+    for pc in range(sub, min(sub + 0x400, len(code)), 8):
+        lo = struct.unpack_from('<I', code, pc)[0]
+        if (lo >> 25) & 0x7F == 0x08:  # IADDIU
+            it, is_ = (lo >> 16) & 0x1F, (lo >> 11) & 0x1F
+            value = (((lo >> 21) & 0xF) << 11) | (lo & 0x7FF)
+            if it == 9 and is_ == 0 and setup is None:
+                setup = value
+            elif it == 1 and is_ == 1:
+                tables.append(value)
+    if setup is None or not tables:
+        return None
+    return setup, max(tables)
+
+
+def light_w_clamped(code):
+    """Whether lighting mode 1 clamps the fourth light's term at 0 (maxx.xyzw) or lets it go negative (maxx.xyz, a
+    darkening light): the code image's own choice, read from the first MAX(bc x) after the routine's entry. Table D
+    entry 1 is at 0x2b20 in the builds seen so far."""
+    if code is None:
+        return True
+    target = None
+    layout = library_layout(code)
+    entry = (layout[1] + 2) * 8 if layout else 0x2b20
+    lo = struct.unpack_from('<I', code, entry)[0]
+    if (lo >> 25) & 0x7F == 0x20:
+        imm = lo & 0x7FF
+        imm = imm - 0x800 if imm & 0x400 else imm
+        target = entry + 8 + imm * 8
+    if target is None:
+        return True
+    for pc in range(target, target + 0x100, 8):
+        up = struct.unpack_from('<I', code, pc + 4)[0]
+        if (up & 0x3F) == 0x10:  # MAXx
+            return ((up >> 21) & 1) != 0
+    return True
+
+
+def run_lighting(run, memory, state, code=None):
     """Vertex colours (+2) lit natively, for the lighting the field uses (mem[14].w = 0, table D): mode 0 colour times
     mem[13], mode 1 four directional lights (directions vf05..vf07 by component, colours mem[5..8],
     ambient mem[19], alpha mem[13].w) times the colour. Clamped to [0, mem[0]], truncated like ftoi0. Returns False for
@@ -199,10 +250,12 @@ def run_lighting(run, memory, state):
         colours = [qword_f(memory, 5 + i) for i in range(4)]
         ambient = qword_f(memory, 19)
         alpha = qword_f(memory, 13)[3]
+        clamp_w = light_w_clamped(code)
         for k in range(count):
             v = vertices + 4 * k
             n = qword_f(memory, v)
-            dots = [max(0.0, d[0][i] * n[0] + d[1][i] * n[1] + d[2][i] * n[2]) for i in range(4)]
+            dots = [d[0][i] * n[0] + d[1][i] * n[1] + d[2][i] * n[2] for i in range(4)]
+            dots = [max(0.0, x) if (i < 3 or clamp_w) else x for i, x in enumerate(dots)]
             factor = [sum(colours[i][c] * dots[i] for i in range(4)) + ambient[c] for c in range(3)] + [alpha]
             apply(v, factor)
         return True
