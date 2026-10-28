@@ -40,6 +40,19 @@ The program at 0x0880 (two code images, likely two builds of the same library) i
 - Output: per strip a GIF packet at vi10 (count, tag from header 13, then ST, RGBA, XYZ per vertex), sent with
   `xgkick`; the per-object state packet is kicked from vi07/vi08.
 
+## Set-up routine 1 (0x3b58): rigid skinning
+
+Each vertex's `+3.w` holds the VU address of a 4x4 bone matrix; the routine transforms the normal (`+0.xyz`, 3x3)
+and the position (`+3.xyz`, 4x4) in place, for `2.y + 1` vertices. Routines 2-4 (0x3c78, 0x3d80, 0x3ec0) are
+probably blends over more bones; the table at instruction 0x54a + 2n (0x2a50...) selects lighting modes, hence the
+normal at `+0`.
+
+## Prototype check
+
+`tools/vp2_mesh_proto.py <trace.vu1rec>` decodes every 0x0880 run from VU memory (positions after the set-up
+routines, matrix vf01..vf04) and compares the screen positions with the XYZ the microprogram sent: field 2620 of
+3000 runs match exactly (to the 1/16 pixel, z too), town 2982 of 3000. The rest is probably the 0x0c38 path.
+
 ## Next
 
 1. The set-up routines (0x2818 → 0x499 + n, 0x54a + ...): matrices, skinning or morphing, lighting.
