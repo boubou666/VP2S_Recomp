@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 // The object a run of program 0x0880 draws, decoded from VU1 data memory (docs/vp2_vu1.md, checked against recorded
 // runs with tools/vp2_mesh_proto.py and vp2s_hle_check):
@@ -299,20 +301,29 @@ namespace
     }
 }
 
+namespace
+{
+    thread_local int g_rejected = 0; // why vp2sBuildMeshPacket last returned false (VP2S_NATIVE_MESH_LOG's columns)
+}
+
 bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1State &state, uint32_t top,
                          std::vector<uint8_t> &packet, Vp2sNativeMesh *native)
 {
     const Layout layout = findLayout(code);
+    g_rejected = 11;
     if (!layout.valid)
         return false;
     static Memory mem; // one run at a time (the VIF1 thread)
     std::memcpy(mem.bytes.data(), data, mem.bytes.size());
     top %= kQwords;
     const int32_t cullSum = mem.i(top + 15u, 0) + mem.i(41u, 2);
+    g_rejected = cullSum == 3 ? 12 : 13;
     if (cullSum == 3 || mem.i(41u, 2) != 0) // paths not checked yet
         return false;
+    g_rejected = 14;
     if (!runSetup(mem, top) || !runLighting(mem, state, top, layout))
         return false;
+    g_rejected = 15;
 
     const Mat4 screen = {Vec4{state.vf[1][0], state.vf[1][1], state.vf[1][2], state.vf[1][3]},
                          Vec4{state.vf[2][0], state.vf[2][1], state.vf[2][2], state.vf[2][3]},
@@ -338,11 +349,14 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
             for (int r = 0; r < 4; ++r)
                 native->matrix[4 * c + r] = screen[c][r];
     }
+    // A triangle strip the native renderer draws needs no GS packet (the caller sends the packet otherwise).
+    const bool packetWanted = !native || (native->prim & 7u) != 4u;
     ps2x::native::Vertex strip[3];
     for (int32_t s = 0; s < strips; ++s)
     {
         const uint32_t count = static_cast<uint32_t>(mem.i(lengths + static_cast<uint32_t>(s), 0)) & 0xFFFFu;
-        put32(packet, count | (s + 1 == strips ? 0x8000u : 0u), tagY, tagZ, tagW);
+        if (packetWanted)
+            put32(packet, count | (s + 1 == strips ? 0x8000u : 0u), tagY, tagZ, tagW);
         float sx[3] = {}, sy[3] = {};
         bool outside[3] = {};
         for (uint32_t k = 0; k < count; ++k, v += 4u)
@@ -366,9 +380,12 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
             }
             const float u = static_cast<float>(mem.i(v + 1u, 0)) / 4096.0f, t = static_cast<float>(mem.i(v + 1u, 1)) / 4096.0f;
             const float r = static_cast<float>(mem.i(v + 1u, 2)) / 4096.0f;
-            put32(packet, bits(u * q), bits(t * q), bits(r * q), bits(fog[3]));
-            put32(packet, static_cast<uint32_t>(mem.i(v + 2u, 0)), static_cast<uint32_t>(mem.i(v + 2u, 1)),
-                  static_cast<uint32_t>(mem.i(v + 2u, 2)), static_cast<uint32_t>(mem.i(v + 2u, 3)));
+            if (packetWanted)
+            {
+                put32(packet, bits(u * q), bits(t * q), bits(r * q), bits(fog[3]));
+                put32(packet, static_cast<uint32_t>(mem.i(v + 2u, 0)), static_cast<uint32_t>(mem.i(v + 2u, 1)),
+                      static_cast<uint32_t>(mem.i(v + 2u, 2)), static_cast<uint32_t>(mem.i(v + 2u, 3)));
+            }
             uint32_t w = 0x0FF0u;
             if (fogOn)
             {
@@ -401,8 +418,9 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
                 if (k >= 2u && !adc)
                     native->triangles.insert(native->triangles.end(), strip, strip + 3);
             }
-            put32(packet, static_cast<uint32_t>(ftoi(x * 16.0)), static_cast<uint32_t>(ftoi(y * 16.0)),
-                  static_cast<uint32_t>(ftoi(z * 16.0)), w);
+            if (packetWanted)
+                put32(packet, static_cast<uint32_t>(ftoi(x * 16.0)), static_cast<uint32_t>(ftoi(y * 16.0)),
+                      static_cast<uint32_t>(ftoi(z * 16.0)), w);
         }
     }
     return strips > 0;
@@ -430,6 +448,9 @@ namespace
         ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
         renderer.setStreamDraws(true);
         renderer.setEnabled(true);
+        // VP2's objects take their textures where the GS keeps them (Material::fromGsContext): the renderer's own
+        // texture cache would only copy every upload for nothing.
+        ps2x::native::setUploadsWanted(false);
         renderer.beginFrame(nativeScreen());
         g_nativeStarted = true;
     }
@@ -456,21 +477,57 @@ void vp2sNativeMeshFrameEnd()
     renderer.beginFrame(nativeScreen());
 }
 
+namespace
+{
+    // VP2S_NATIVE_MESH_LOG: every 2 s, the VU1 programs seen: 0-7 objects sent as packets (by PRIM type), 8 drawn
+    // natively, 9 culled whole, 10 another program (the VU1 runs it); the mesh program not handled here: 11 another
+    // layout, 12 cull sum 3, 13 VI41.z set, 14 setup or lighting, 15 later.
+    void countHle(int kind)
+    {
+        static const bool s_on = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
+        if (!s_on)
+            return;
+        static std::mutex s_mutex;
+        static uint64_t s_counts[16] = {};
+        static auto s_since = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(s_mutex);
+        ++s_counts[kind];
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_since < std::chrono::seconds(2))
+            return;
+        std::string line = "[vp2s-native] 2 s:";
+        for (uint64_t count : s_counts)
+            line += " " + std::to_string(count);
+        std::fprintf(stderr, "%s (packets by PRIM type 0-7, native, culled, other program, not handled: layout, cull 3, vi41z, setup/lighting, later)\n", line.c_str());
+        std::fill(std::begin(s_counts), std::end(s_counts), 0ull);
+        s_since = now;
+    }
+}
+
 bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
 {
     if (run.startPc != 0x0880u || !run.code || !run.data || !run.state || !run.kick)
+    {
+        countHle(10);
         return false;
+    }
     thread_local std::vector<uint8_t> packet;
     thread_local Vp2sNativeMesh mesh;
     const bool native = vp2sNativeMeshEnabled() && run.nativeDraw;
     if (!vp2sBuildMeshPacket(run.code, run.data, *run.state, run.top, packet, native ? &mesh : nullptr))
+    {
+        countHle(g_rejected);
         return false;
+    }
+    static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
     static int s_logged = 0;
-    if (native && s_logged < 12 && std::getenv("VP2S_NATIVE_MESH_LOG"))
+    if (native && s_log && s_logged < 12)
     {
         ++s_logged;
         std::fprintf(stderr, "[vp2s-native] prim %#x, %zu vertices\n", mesh.prim, mesh.triangles.size());
     }
+    if (native)
+        countHle((mesh.prim & 7u) != 4u ? static_cast<int>(mesh.prim & 7u) : mesh.triangles.empty() ? 9 : 8);
     // Triangle strips only (PRIM type 4): anything else still goes to the GS as packets.
     if (!native || (mesh.prim & 7u) != 4u)
     {
@@ -482,6 +539,7 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
     material.textured = (mesh.prim >> 4) & 1u; // TME
     material.fog = (mesh.prim >> 5) & 1u;      // FGE
     material.alphaBlend = (mesh.prim >> 6) & 1u; // ABE
+    material.context = static_cast<uint8_t>((mesh.prim >> 9) & 1u); // CTXT
     uint64_t group = 0;
     {
         std::lock_guard<std::mutex> lock(g_nativeMutex);
