@@ -47,6 +47,16 @@ and the position (`+3.xyz`, 4x4) in place, for `2.y + 1` vertices. Routines 2-4 
 probably blends over more bones; the table at instruction 0x54a + 2n (0x2a50...) selects lighting modes, hence the
 normal at `+0`.
 
+## Which set-up routines objects use (field trace, 3000 runs)
+
+Header `5.n` is an offset into the jump table at instruction 0x499 (two instructions an entry): 2 → 0x3b58 (rigid
+skinning), 4 → 0x3c78, 6 → 0x3d80, 8 → 0x3ec0, 36, 46, 48 → further entries. Most common header 5 values:
+(8, 4, 46, 0) 1180 + 149 runs, (8, 0, 0, 0) 1054, none 325, (8, 2, 0, 0) 99, (8, 4, 36, 46) 63, (6, 48, 0, 0) 54.
+`8.y` (lighting table) is 0, 1 or 3; `mem[15].w` is 1 for almost every run.
+
+The matrix vf01..vf04 is never changed by these runs: another microprogram loads it (likely the short ones at 0x0238
+or 0x06e0 at the start of a frame), so the adapter reads it where that program does.
+
 ## Prototype check
 
 `tools/vp2_mesh_proto.py <trace.vu1rec>` decodes every 0x0880 run from VU memory (positions after the set-up
