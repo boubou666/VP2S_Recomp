@@ -26,6 +26,7 @@ D:\\Tools\\downloads). toolchain/Dockerfile remains for Linux builds of the fork
 """
 import argparse
 import getpass
+import hashlib
 import json
 import zipfile
 import os
@@ -41,6 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
 EXTRACT = BUILD / "extract"
 ELF_DIR = BUILD / "elf"
+CAPTURED = BUILD / "captured_modules"
 GHIDRA_DIR = BUILD / "ghidra"
 EXPORT_DIR = GHIDRA_DIR / "export"
 # VP2S_FORK / VP2S_TEST_BUILD / VP2S_RECOMP / VP2S_PORT_BUILD build another fork checkout (e.g. a
@@ -97,7 +99,29 @@ def stale(outputs: list[Path], inputs: list[Path], force: bool) -> bool:
 
 
 def modules() -> list[dict]:
-    return json.loads((EXTRACT / "modules.json").read_text())
+    """The extracted modules, then those captured from memory at run time (build/captured_modules,
+    see captured_modules)."""
+    found = json.loads((EXTRACT / "modules.json").read_text())
+    known = {m["id"] for m in found}
+    return found + [m for m in captured_modules() if m["id"] not in known]
+
+
+def captured_modules() -> list[dict]:
+    """Modules the game loads that the extractor never found on the disc (docs/AUDIT.md: slots declared
+    but not found, e.g. the tutorial's module 27). The VP2S diagnostics save each unknown module they see in
+    a slot as build/port/vp2s_module_<load>_<hash>.bin (header included, extractor format); copied into
+    build/captured_modules they are wrapped and recompiled like the others."""
+    result = []
+    for path in sorted(CAPTURED.glob("*.bin")):
+        data = path.read_bytes()
+        _, ident, load, text, dsize, bss, ctor_lo, ctor_hi = struct.unpack_from("<8I", data, 0)
+        ctors = [struct.unpack_from("<I", data, a - load)[0] for a in range(ctor_lo, ctor_hi, 4)
+                 if 0 <= a - load <= len(data) - 4] if ctor_hi - ctor_lo <= 0x1000 else []
+        result.append({"file": str(path), "id": ident, "name": None, "format": "module", "load": f"0x{load:08x}",
+                       "code_start": f"0x{load + 0x80:08x}", "text_size": text - 0x80, "data_size": dsize,
+                       "bss_size": bss, "ctors": [f"0x{c:08x}" for c in ctors], "size": len(data),
+                       "sha1": hashlib.sha1(data).hexdigest(), "captured": True})
+    return result
 
 
 def module_name(module: dict) -> str:

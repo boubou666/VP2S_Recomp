@@ -42,7 +42,10 @@ def text_end(module: bytes, text: int) -> int:
     +0x6240 are called when leaving Logun)."""
     word = lambda off: struct.unpack_from("<I", module, off)[0] if 0 <= off <= len(module) - 4 else None
     end = header_text_end(module, text, word)
-    thunk = lambda at: ((word(at) or 0) >> 26 == 0x02 and (word(at + 4) or 0) >> 16 == 0x2484
+    # Also one-instruction virtual methods (`jr ra` and its delay slot, e.g. `li v0,0`), padded to 16 bytes:
+    # module 27 (the tutorial) keeps them there and calls them through a vtable in another module.
+    thunk = lambda at: (((word(at) or 0) >> 26 == 0x02 and (word(at + 4) or 0) >> 16 == 0x2484
+                         or word(at) == JR_RA and word(at + 4) is not None and word(at + 4) != JR_RA)
                         and word(at + 8) == 0 and word(at + 12) == 0)
     tail = end + 8 if word(end) == JR_RA else end  # module 15's last function returns just past it
     aligned = (tail + 15) & ~15  # past the zero padding of the last function

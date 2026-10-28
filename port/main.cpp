@@ -228,8 +228,27 @@ namespace
                 uint64_t hash = 1469598103934665603ull;
                 for (uint32_t off = 0x80u; off < text && off < 0x100000u; ++off)
                     hash = (hash ^ rdram[(slot.address + off) & PS2_RAM_MASK]) * 1099511628211ull;
-                std::cout << std::hex << "(unknown: text=0x" << text << " data=0x" << word(slot.address + 16u)
+                const uint32_t data = word(slot.address + 16u);
+                std::cout << std::hex << "(unknown: text=0x" << text << " data=0x" << data
                           << " bss=0x" << word(slot.address + 20u) << " fnv=" << hash << ")" << std::dec;
+                // Saved once, in the extractor's module format (header included), to be wrapped and recompiled:
+                // docs/AUDIT.md's slots declared but never found on the disc.
+                static std::vector<uint64_t> saved;
+                const uint32_t size = text + data;
+                if (std::find(saved.begin(), saved.end(), hash) == saved.end() && size <= 0x200000u &&
+                    (slot.address & PS2_RAM_MASK) + size <= PS2_RAM_SIZE)
+                {
+                    saved.push_back(hash);
+                    char name[64];
+                    std::snprintf(name, sizeof(name), "vp2s_module_%08x_%016llx.bin", slot.address,
+                                  static_cast<unsigned long long>(hash));
+                    if (std::FILE *out = std::fopen(name, "wb"))
+                    {
+                        std::fwrite(rdram + (slot.address & PS2_RAM_MASK), 1, size, out);
+                        std::fclose(out);
+                        std::cout << " saved=" << name;
+                    }
+                }
             }
         }
         const std::string file = "vp2s_diag_" + std::to_string(diag.shot++) + ".png";

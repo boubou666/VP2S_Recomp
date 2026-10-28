@@ -4,13 +4,16 @@
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
 #include "vp2s_vu1_hle.h"
+#include "ps2_overlay_modules.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <unordered_map>
 
 namespace
 {
@@ -163,8 +166,114 @@ namespace
         storeFloat(rdram, kStepSeconds, seconds);
     }
 
+    // FUN_001025d0(loader, file, slot, index) decompresses the index-th SLZ/SLE chunk of a file already in memory
+    // into a module slot. Many modules are not found on the disc by the extractor (docs/AUDIT.md: declared slots with
+    // no module; their files carry another layer of encryption): every module it loads that the port does not know
+    // is saved once to build/captured_modules/<load>_<id>.bin, where tools/pipeline.py picks it up. VP2S_MODULE_TRACE=1
+    // also prints each chunk's header and first bytes.
+    constexpr uint32_t kModuleLoad = 0x001025D0u;
+    PS2Runtime::RecompiledFunction g_moduleLoad = nullptr;
+
+    void captureUnknownModule(uint8_t *rdram, uint32_t slot)
+    {
+        // A module image: header +8 load address (the slot), +4 id, +12 text end, +16 data size.
+        if (slot < 0x00100000u || slot >= 0x01000000u || load32(rdram, slot + 8u) != slot)
+            return;
+        // Known when a registered module loaded at this very address is resident (a module of another slot may
+        // cover the address too: the camp modules at 0x495000 reach past slot 5 at 0x4aea80).
+        if (const ps2_overlays::Module *known = ps2_overlays::residentModuleFor(rdram, slot + 0x80u);
+            known && known->loadAddress == slot)
+            return;
+        const uint32_t id = load32(rdram, slot + 4u), size = load32(rdram, slot + 12u) + load32(rdram, slot + 16u);
+        if (id == 0u || id > 0xFFFFu || size < 0x100u || size > 0x200000u)
+            return;
+        char name[96];
+        std::snprintf(name, sizeof(name), "../captured_modules/%08x_%03u.bin", slot, id);
+        if (std::filesystem::exists(name))
+            return;
+        std::error_code ec;
+        std::filesystem::create_directories("../captured_modules", ec);
+        if (std::FILE *out = std::fopen(name, "wb"))
+        {
+            std::fwrite(guest(rdram, slot), 1, size, out);
+            std::fclose(out);
+            std::cout << "[vp2s] captured unknown module " << id << " at 0x" << std::hex << slot << std::dec << " -> "
+                      << name << std::endl;
+        }
+    }
+
+    void traceModuleLoad(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t file = reg(ctx, 5);
+        const uint32_t slot = reg(ctx, 6), index = reg(ctx, 7);
+        static const bool trace = [] { const char *v = std::getenv("VP2S_MODULE_TRACE"); return v && v[0] == '1'; }();
+        if (trace)
+        {
+            for (uint32_t k = 0; k < index && k < 64u; ++k)
+                file += load32(rdram, file + 0xCu);
+            std::cout << std::hex << "[vp2s-load] slot=0x" << slot << " file=0x" << reg(ctx, 5) << " index=" << index
+                      << " chunk=0x" << file << " head=";
+            for (uint32_t k = 0; k < 48u; ++k)
+            {
+                const uint8_t b = *guest(rdram, file + k);
+                std::cout << "0123456789abcdef"[b >> 4] << "0123456789abcdef"[b & 15];
+            }
+            std::cout << std::dec << std::endl;
+        }
+        g_moduleLoad(rdram, ctx, runtime);
+        captureUnknownModule(rdram, slot);
+    }
+
+    // FUN_001210a0(module header, ...) clears a module's bss and runs its constructors: every module goes through it
+    // whatever loaded it, so an unknown one is captured there too (before its constructors call into it).
+    constexpr uint32_t kModuleInit = 0x001210A0u;
+    PS2Runtime::RecompiledFunction g_moduleInit = nullptr;
+
+    void captureAtModuleInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        captureUnknownModule(rdram, reg(ctx, 4));
+        g_moduleInit(rdram, ctx, runtime);
+    }
+
+    // VP2S_HOOK_TRACE=<address>[,<address>...]: prints a0..a3 and ra of the first 40 calls of each function.
+    std::unordered_map<uint32_t, std::pair<PS2Runtime::RecompiledFunction, uint32_t>> g_traced;
+
+    void traceCall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const auto it = g_traced.find(ctx->pc);
+        if (it == g_traced.end())
+            return;
+        if (it->second.second++ < 40u)
+            std::cout << std::hex << "[vp2s-hook] 0x" << ctx->pc << " a0=0x" << reg(ctx, 4) << " a1=0x" << reg(ctx, 5)
+                      << " a2=0x" << reg(ctx, 6) << " a3=0x" << reg(ctx, 7) << " ra=0x" << reg(ctx, 31) << std::dec
+                      << std::endl;
+        it->second.first(rdram, ctx, runtime);
+    }
+
     void applyVp2s(PS2Runtime &runtime)
     {
+        if (const char *hooks = std::getenv("VP2S_HOOK_TRACE"))
+        {
+            for (const char *cursor = hooks; *cursor;)
+            {
+                char *end = nullptr;
+                const uint32_t address = static_cast<uint32_t>(std::strtoul(cursor, &end, 0));
+                if (end == cursor)
+                    break;
+                if (PS2Runtime::RecompiledFunction original = runtime.lookupFunction(address))
+                {
+                    g_traced[address] = {original, 0u};
+                    runtime.replaceFunction(address, &traceCall);
+                }
+                cursor = *end == ',' ? end + 1 : end;
+            }
+        }
+        g_moduleLoad = runtime.lookupFunction(kModuleLoad);
+        if (g_moduleLoad)
+            runtime.replaceFunction(kModuleLoad, &traceModuleLoad);
+        g_moduleInit = runtime.lookupFunction(kModuleInit);
+        if (g_moduleInit)
+            runtime.replaceFunction(kModuleInit, &captureAtModuleInit);
         runtime.configureReservedMemory(kReservedBase, kReservedTop, kHeapLimit);
 
         // VP2 waits for its vblank by spinning on a counter in FUN_0011f520 (main thread, 0x11f520-0x11f5b4), never in
