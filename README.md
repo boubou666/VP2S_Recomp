@@ -8,7 +8,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 ![Platform](https://img.shields.io/badge/platform-Windows-1b8cff)
 ![Compiler](https://img.shields.io/badge/compiler-MSVC-1b8cff)
 ![Based on](https://img.shields.io/badge/based%20on-PS2Recomp-17a35b)
-![Status](https://img.shields.io/badge/status-not%20playable%20yet-d01f3c)
+![Status](https://img.shields.io/badge/status-playable%20%28chapter%201%29-e3a21a)
 
 </div>
 
@@ -24,7 +24,7 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ## Status
 
-**Work in progress, not playable yet.** The game boots to the title screen with music. **New Game** plays the opening movie, the chapter title card, then the chapter 1 cutscenes with their subtitled dialogue, up to the port of Logun, where Alicia walks around and the town's prompts (talk, exits) appear. The first field scene runs at 50 VSync/s; the town of Logun at full speed (49 VSync/s) with about 43 distinct pictures per second.
+**Work in progress, playable through the start of chapter 1.** The game boots to the title screen with music; **New Game** plays the opening movie and the chapter 1 cutscenes up to the port of Logun, where Alicia explores the town; leaving it leads to the battle tutorial, the first battles, the menus and saving to the memory card (played with a gamepad on 2026-10-28). The field and the town run at the PAL rate (50 VSync/s, 48 to 50 distinct pictures per second).
 
 | Milestone | |
 |---|:---:|
@@ -46,7 +46,23 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 
 ✅ works · 🔧 in progress · ⏳ not reached yet
 
-### Screenshots
+### Toward a full recompilation
+
+The goal is a real PC port of the game, not a PS2 emulator around recompiled code: every part of the game is to run as
+native code, with no PS2 hardware simulated (no vblank cap, real frame time, a modern renderer), agreed with the other
+PS2Recomp ports. Where it stands:
+
+| Part | Today | Next |
+|---|---|---|
+| Game code (EE, MIPS R5900) | **Native C++**: the main ELF and every overlay module, including the modules the disc hides behind an extra encryption layer, captured from memory the first time the game loads them and recompiled | Decrypt that layer to extract all of them (about 350) at once |
+| VU0 (macro mode) | **Native**: recompiled with the EE code | |
+| VU1 mesh microprogram (pc 0x0880, almost every model) | **Native C++** (`port/vp2s_vu1_hle.cpp`): same GS output, every drawn vertex checked against the VU1 traces | Its last cases (set-up routine 36, lighting mode 3), the three small microprograms left |
+| GS (graphics) | Emulated on the GPU (paraLLEl-GS); a native OpenGL backend exists but is slower | Draw the models directly from the native microprogram's vertices: no GS packets |
+| VIF1 / DMA | Emulated | Feed the native microprogram from main memory |
+| Frame pacing | PAL vblank by default; a native loop (`VP2S_NATIVE=1`) paces frames on the host with the real frame time | Native loop by default, frame rate menu (30, 60, unlimited) |
+| IOP and sound (SPU2) | Interpreted IOP, emulated SPU2 | Recompiled sound modules and a native mixer on wall time (shared work with the TMB port) |
+
+
 
 Captured from `vp2s.exe` (PAL release, French text).
 

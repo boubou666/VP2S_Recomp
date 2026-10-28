@@ -506,6 +506,9 @@ int main(int argc, char *argv[])
         setDefault("PS2X_SPU2_DMA_CYCLES_PER_2BYTES", "16");
         // VP2's battles move the party with the left stick and the game never switches the pad to analog itself.
         setDefault("PS2X_PAD_START_ANALOG", "1");
+        // VP2 blends both read circuits one line apart (the console's flicker filter): keeping that merge in the
+        // paraLLEl scanout draws its text as on the console instead of one field line-doubled.
+        setDefault("PS2X_GS_ANTI_BLUR", "0");
         PS2Runtime runtime;
 
         Diagnostics diagnostics;
