@@ -177,9 +177,9 @@ namespace
                 runtime.eeScheduler().setVBlankHoldLimit(std::chrono::microseconds(std::strtoul(limit, nullptr, 10)));
         }
 
-        // VP2S_VU1_HLE=1: the mesh microprogram (pc 0x0880) done natively, VU1 only for what it does not do yet
-        // (vp2s_vu1_hle.cpp, docs/vp2_vu1.md).
-        if (const char *hle = std::getenv("VP2S_VU1_HLE"); hle && hle[0] == '1')
+        // The mesh microprogram (pc 0x0880) done natively, VU1 only for what it does not do yet (vp2s_vu1_hle.cpp,
+        // docs/vp2_vu1.md): the same GS output, field 41 -> 48 distinct frames/s. VP2S_VU1_HLE=0 runs it on VU1.
+        if (const char *hle = std::getenv("VP2S_VU1_HLE"); !hle || hle[0] != '0')
         {
             ps2x::native::setVu1Hle(&vp2sVu1Hle);
             std::cout << "[vp2s] VU1 mesh program done natively" << std::endl;
