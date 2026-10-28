@@ -302,6 +302,8 @@ def packet_vertices(packets):
                     elif reg in (0x4, 0x5):
                         w = struct.unpack_from('<4I', packet, p)
                         current['xyz'] = (w[0] & 0xFFFF, w[1] & 0xFFFF, w[2], (w[3] >> 15) & 1)
+                        current['fog'] = (w[3] >> 4) & 0xFF if reg == 0x4 else None
+                        current['raw'] = w
                         out.append(dict(current))
                     p += 16
             if (lo >> 15) & 1:
@@ -326,6 +328,45 @@ def decode_full(run, data, state):
             uv = qword_i(data, v + 1)
             out.append(dict(xyz=(c[0] * q, c[1] * q, c[2] * q), st=(uv[0] / 4096.0 * q, uv[1] / 4096.0 * q, uv[2] / 4096.0 * q),
                             rgba=qword_i(data, v + 2)))
+            v += 4
+    return out
+
+
+def decode_packets(run, data, state):
+    """Each vertex as the GS gets it: S, T, Q, RGBA, XYZF2 (x, y, z as ftoi4 gives them, fog, adc), and the strip it
+    starts (True on a strip's first vertex). ADC: a strip's first two vertices; any of the last three vertices
+    outside the clip volume of the matrix at mem[85..88]; a back-facing triangle when the object culls (header 15.x
+    + mem[41].z == 0: screen cross product of the last three, sign alternating along the strip, positive = back).
+    Fog (mem[15].w != 0): mem[68].z + mem[68].w * Q, clamped to 0..255."""
+    top = run['top']
+    h0 = qword_i(data, top)
+    m = [vf(state, 1), vf(state, 2), vf(state, 3), vf(state, 4)]
+    clip = matrix(data, 85)
+    culls = qword_i(data, top + 15)[0] + qword_i(data, 41)[2] == 0
+    lit = qword_i(data, 15)[3] != 0
+    fogp = qword_f(data, 68)
+    out = []
+    v = top + h0[1]
+    for s in range(h0[2]):
+        screens = []
+        outside = []
+        for k in range(qword_i(data, top + h0[3] + s)[0] & 0xFFFF):
+            p = qword_f(data, v + 3)
+            c = transform(m, p, 1.0)
+            q = 1.0 / c[3] if c[3] != 0.0 else 0.0
+            x, y, z = c[0] * q, c[1] * q, c[2] * q
+            screens.append((x, y))
+            cc = transform(clip, p, 1.0)
+            outside.append(any(abs(cc[i]) > abs(cc[3]) for i in range(3)))
+            adc = k < 2 or any(outside[max(0, k - 2):k + 1])
+            if not adc and culls:
+                a, b, d = screens[k - 2], screens[k - 1], screens[k]
+                cross = (a[0] - b[0]) * (b[1] - d[1]) - (a[1] - b[1]) * (b[0] - d[0])
+                adc = cross * (1 if k % 2 == 0 else -1) > 0
+            fog = int(max(0.0, min(fogp[2] + fogp[3] * q, 255.0))) if lit else None
+            uv = qword_i(data, v + 1)
+            out.append(dict(st=(uv[0] / 4096.0 * q, uv[1] / 4096.0 * q, uv[2] / 4096.0 * q), rgba=qword_i(data, v + 2),
+                            xyz=(int(x * 16), int(y * 16), int(z * 16)), fog=fog, adc=adc, first=k == 0, k=k))
             v += 4
     return out
 

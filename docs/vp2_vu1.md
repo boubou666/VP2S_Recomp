@@ -63,8 +63,30 @@ or 0x06e0 at the start of a frame), so the adapter reads it where that program d
 routines, matrix vf01..vf04) and compares the screen positions with the XYZ the microprogram sent: field 2620 of
 3000 runs match exactly (to the 1/16 pixel, z too), town 2982 of 3000. The rest is probably the 0x0c38 path.
 
+## Output details (checked on all three traces)
+
+- Set-up routines done natively: 8 (int normal 12-bit / position 12.4 to float), 6 (normals only), 2 (rigid
+  skinning, count + 1 vertices), 4 (two-bone blend: per vertex x = matrix A, z = matrix B, y / w weights),
+  48 (texture scroll: offset .zw at mem[38 + data.x], added to the 12-bit UV), 46 none. Not yet: 36, lighting mode 3,
+  `mem[14].w != 0` paths.
+- Lighting (table D, `mem[14].w == 0`): mode 0 colour times mem[13] (RGB to 0 without `mem[14].x`); mode 1 four
+  directional lights: directions vf05..vf07 by component, colours mem[5..8], ambient mem[19], alpha mem[13].w,
+  colour = clamp(vertex colour times light, 0, mem[0]), truncated. Some builds do not clamp the fourth light at 0
+  (`maxx.xyz` + `move.w`): read from the code.
+- Builds: the library exists at two layouts (set-up table 0x499 / 0x483, lighting table D 0x562 / 0x54c), found by
+  following the BAL at 0x08a8 and its IADDIUs.
+- XYZF2 w: ADC for a strip's first two vertices (don't care), any of the last three vertices outside the clip volume
+  of mem[85..88], and back faces when the object culls (header `15.x + mem[41].z == 0`: cross product of the last
+  three screen positions, sign alternating along the strip, positive = back); fog (`mem[15].w != 0`) =
+  clamp(mem[68].z + mem[68].w * Q, 0, 255) in bits 4..11; an ADC vertex's w is the constant 0x8ff0.
+- Packet: per strip a tag (x = vertex count, EOP on the last strip; y..w from header 13: PRIM 0x3C tri strip with
+  IIP, TME, FGE, NREG 3, regs ST RGBAQ XYZF2), then ST (S, T, Q floats), RGBA (ints), XYZF2 per vertex.
+
+`tools/vp2_mesh_proto.py` reproduces 180704 drawn vertices exactly (position to 1/16 pixel in 99.6% of the 32-bit
+words, the rest 1 unit off; UV, colour, fog and ADC exact).
+
 ## Next
 
-1. The set-up routines (0x2818 → 0x499 + n, 0x54a + ...): matrices, skinning or morphing, lighting.
-2. The path at 0x0c38 (`mem[15].w != 0`).
-3. A VIF1 stream of one object (UNPACK targets, MSCAL 0x0880, the state packet) to map header fields to EE data.
+1. C++ high-level emulation of program 0x0880 in the port: at MSCAL, build the PATH1 packets natively and skip VU1
+   (falling back to VU1 for what is not done yet), checked against the real VU1 run in a shadow mode.
+2. Routine 36, lighting mode 3, the `mem[14].w != 0` paths.
