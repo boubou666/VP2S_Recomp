@@ -165,6 +165,16 @@ def run_setup(run, memory):
                 p = qword_f(memory, v + 3)
                 set_f(memory, v, transform(m, n, 0.0), 'xyz')
                 set_f(memory, v + 3, transform(m, p, 1.0), 'xyz')
+        elif routine == 48:
+            # Texture scrolling: an offset (S, T in .zw) picked by the routine's data, added to every vertex's UV.
+            index = qword_i(memory, base)[0]
+            off = qword_f(memory, 38 + index)
+            for k in range(count):
+                v = vertices + 4 * k
+                uv = list(qword_i(memory, v + 1))
+                for c in range(2):
+                    uv[c] = int((uv[c] / 4096.0 + off[2 + c]) * 4096.0)
+                struct.pack_into('<2i', memory, (v + 1 & 0x3FF) * 16, uv[0], uv[1])
         else:
             unknown.append(routine)
     return unknown
@@ -241,7 +251,11 @@ def run_lighting(run, memory, state, code=None):
         struct.pack_into('<4i', memory, (v + 2 & 0x3FF) * 16, *out)
 
     if mode == 0:
-        scale = qword_f(memory, 13)
+        # Seen on the traces: with mem[14].x the colour is scaled by mem[13]; without it RGB goes to 0 and only the
+        # alpha is scaled (the entry branches from a branch's delay slot; to confirm against the code).
+        scale = list(qword_f(memory, 13))
+        if not flags[0]:
+            scale[0] = scale[1] = scale[2] = 0.0
         for k in range(count):
             apply(vertices + 4 * k, scale)
         return True
