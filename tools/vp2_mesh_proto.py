@@ -106,6 +106,163 @@ def packet_xyz(packets):
     return out
 
 
+def set_f(memory, qw, values, mask='xyzw'):
+    for i, c in enumerate('xyzw'):
+        if c in mask:
+            struct.pack_into('<f', memory, (qw & 0x3FF) * 16 + i * 4, values[i])
+
+
+def matrix(memory, qw):
+    return [qword_f(memory, qw + r) for r in range(4)]
+
+
+def transform(m, v, w):
+    return [m[0][i] * v[0] + m[1][i] * v[1] + m[2][i] * v[2] + m[3][i] * w for i in range(4)]
+
+
+def run_setup(run, memory):
+    """The object's set-up routines (header 5.x..w, data at 4.x..w), done natively on a copy of VU memory: 8 integer
+    normals (12-bit) and positions (12.4) to float, 2 rigid skinning, 4 two-bone skinning, 6 integer normals only.
+    Returns the routines it did not know."""
+    top = run['top']
+    h2, h4, h5 = qword_i(memory, top + 2), qword_i(memory, top + 4), qword_i(memory, top + 5)
+    vertices = top + qword_i(memory, top)[1]
+    count = h2[1]
+    unknown = []
+    for routine, data in zip(h5, h4):
+        if routine in (0, 46):
+            continue
+        base = top + data
+        if routine == 8:
+            for k in range(count):
+                v = vertices + 4 * k
+                n = qword_i(memory, v)
+                p = qword_i(memory, v + 3)
+                set_f(memory, v, [n[0] / 4096.0, n[1] / 4096.0, n[2] / 4096.0, 0.0], 'xyz')
+                set_f(memory, v + 3, [p[0] / 16.0, p[1] / 16.0, p[2] / 16.0, 0.0], 'xyz')
+        elif routine == 6:
+            for k in range(count):
+                v = vertices + 4 * k
+                n = qword_i(memory, v)
+                set_f(memory, v, [n[0] / 4096.0, n[1] / 4096.0, n[2] / 4096.0, 0.0], 'xyz')
+        elif routine == 2:
+            for k in range(count + 1):
+                v = vertices + 4 * k
+                bone = qword_i(memory, v + 3)[3]
+                m = matrix(memory, bone)
+                n = qword_f(memory, v)
+                p = qword_f(memory, v + 3)
+                set_f(memory, v, transform(m, n, 0.0), 'xyz')
+                set_f(memory, v + 3, transform(m, p, 1.0), 'xyzw')
+        elif routine == 4:
+            for k in range(count):
+                v = vertices + 4 * k
+                e = qword_i(memory, base + k)
+                ef = qword_f(memory, base + k)
+                a, b = matrix(memory, e[0]), matrix(memory, e[2])
+                m = [[a[r][c] * ef[1] + b[r][c] * ef[3] for c in range(4)] for r in range(4)]
+                n = qword_f(memory, v)
+                p = qword_f(memory, v + 3)
+                set_f(memory, v, transform(m, n, 0.0), 'xyz')
+                set_f(memory, v + 3, transform(m, p, 1.0), 'xyz')
+        else:
+            unknown.append(routine)
+    return unknown
+
+
+def run_lighting(run, memory, state):
+    """Vertex colours (+2) lit natively, for the lighting the field uses (mem[14].w = 0, table D): mode 0 colour times
+    mem[13], mode 1 four directional lights (directions vf05..vf07 by component, colours mem[5..8],
+    ambient mem[19], alpha mem[13].w) times the colour. Clamped to [0, mem[0]], truncated like ftoi0. Returns False for
+    a mode not done yet."""
+    top = run['top']
+    mode = qword_i(memory, top + 8)[1]
+    flags = qword_i(memory, 14)
+    count = qword_i(memory, top + 2)[1]
+    vertices = top + qword_i(memory, top)[1]
+    limit = qword_f(memory, 0)
+    if flags[3] != 0:
+        return False
+
+    def apply(v, factor):
+        c = qword_i(memory, v + 2)
+        out = [int(max(0.0, min(c[i] * factor[i], limit[i]))) for i in range(4)]
+        struct.pack_into('<4i', memory, (v + 2 & 0x3FF) * 16, *out)
+
+    if mode == 0:
+        scale = qword_f(memory, 13)
+        for k in range(count):
+            apply(vertices + 4 * k, scale)
+        return True
+    if mode == 1:
+        d = [vf(state, 5), vf(state, 6), vf(state, 7)]
+        colours = [qword_f(memory, 5 + i) for i in range(4)]
+        ambient = qword_f(memory, 19)
+        alpha = qword_f(memory, 13)[3]
+        for k in range(count):
+            v = vertices + 4 * k
+            n = qword_f(memory, v)
+            dots = [max(0.0, d[0][i] * n[0] + d[1][i] * n[1] + d[2][i] * n[2]) for i in range(4)]
+            factor = [sum(colours[i][c] * dots[i] for i in range(4)) + ambient[c] for c in range(3)] + [alpha]
+            apply(v, factor)
+        return True
+    return False
+
+
+def packet_vertices(packets):
+    """Per vertex of PACKED GIF packets: dict of st (S, T, Q floats), rgba (ints), xyz (x, y, z, adc)."""
+    out = []
+    current = {}
+    for packet in packets:
+        p = 0
+        while p + 16 <= len(packet):
+            lo, hi = struct.unpack_from('<QQ', packet, p)
+            p += 16
+            nloop = lo & 0x7FFF
+            flg = (lo >> 58) & 3
+            nreg = (lo >> 60) & 0xF or 16
+            if flg != 0:
+                break
+            regs = [(hi >> (4 * i)) & 0xF for i in range(nreg)]
+            for _ in range(nloop):
+                for reg in regs:
+                    if p + 16 > len(packet):
+                        return out
+                    if reg == 0x2:
+                        current['st'] = struct.unpack_from('<3f', packet, p)
+                    elif reg == 0x1:
+                        current['rgba'] = struct.unpack_from('<4I', packet, p)
+                    elif reg in (0x4, 0x5):
+                        w = struct.unpack_from('<4I', packet, p)
+                        current['xyz'] = (w[0] & 0xFFFF, w[1] & 0xFFFF, w[2], (w[3] >> 15) & 1)
+                        out.append(dict(current))
+                    p += 16
+            if (lo >> 15) & 1:
+                break
+    return out
+
+
+def decode_full(run, data, state):
+    """Each vertex: screen x, y, z (float, before ftoi4), S, T, Q, RGBA."""
+    top = run['top']
+    h0 = qword_i(data, top)
+    vertices_at = top + h0[1]
+    strips_at = top + h0[3]
+    m = [vf(state, 1), vf(state, 2), vf(state, 3), vf(state, 4)]
+    out = []
+    v = vertices_at
+    for s in range(h0[2]):
+        for _ in range(qword_i(data, strips_at + s)[0] & 0xFFFF):
+            p = qword_f(data, v + 3)
+            c = transform(m, p, 1.0)
+            q = 1.0 / c[3] if c[3] != 0.0 else 0.0
+            uv = qword_i(data, v + 1)
+            out.append(dict(xyz=(c[0] * q, c[1] * q, c[2] * q), st=(uv[0] / 4096.0 * q, uv[1] / 4096.0 * q, uv[2] / 4096.0 * q),
+                            rgba=qword_i(data, v + 2)))
+            v += 4
+    return out
+
+
 def decode(run, data, state):
     top = run['top']
     h0 = qword_i(data, top)
@@ -133,15 +290,24 @@ def decode(run, data, state):
 
 def main():
     path = sys.argv[1]
-    limit = int(sys.argv[2]) if len(sys.argv) > 2 else 20
-    checked = matched = 0
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else 20
+    native = '--native' in sys.argv
+    checked = matched = skipped = 0
     code = None
     for run in read_records(path):
         if run['code'] is not None:
             code = run['code']
         if run['start'] != 0x0880 or run['resume'] != 0:
             continue
-        got = decode(run, run['data_after'], run['state_after'])
+        if native:
+            memory = bytearray(run['data_before'])
+            unknown = run_setup(run, memory)
+            if unknown:
+                skipped += 1
+                continue
+            got = decode(run, memory, run['state_before'])
+        else:
+            got = decode(run, run['data_after'], run['state_after'])
         want = packet_xyz(run['packets'])
         n = min(len(got), len(want))
         # ftoi4: x, y, z times 16 as integers; x and y land in 16 bits (wrapping), z in 32.
@@ -157,7 +323,7 @@ def main():
                    (want[0][0] / 16.0, want[0][1] / 16.0, want[0][2]) if want else None))
         if checked >= limit:
             break
-    print('%d runs checked, %d fully matched' % (checked, matched))
+    print('%d runs checked, %d fully matched, %d skipped (set-up routine not done yet)' % (checked, matched, skipped))
 
 
 if __name__ == '__main__':
