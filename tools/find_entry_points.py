@@ -174,6 +174,15 @@ def find_entry_points(images: dict[str, Image], csvs: dict[str, Path]) -> dict[s
                 target = image.word(slot)
                 if target and image.in_code(target) and target not in known.get(name, set()):
                     result[name].add(target)
+        # C++ this-adjusting thunks (`j method`, `addiu a0,a0,-N` in its delay slot, nop padding to 16
+        # bytes): only vtables reach them, and those may be built at run time or live in another input.
+        # Modules keep them after their last function, where the section split may have put .data
+        # already, so the whole image is scanned (VP2 hung leaving Logun on mod010's thunk at 0x494c60).
+        for addr in range(image.load, image.load + len(image.bytes) - 16, 16):
+            w = [image.word(addr + 4 * k) for k in range(4)]
+            if (w[0] >> 26 == 0x02 and w[1] >> 16 == 0x2484 and w[2] == 0 and w[3] == 0
+                    and addr not in known.get(name, set())):
+                result[name].add(addr)
         # Routines of another input called only from this one: an overlay calling the main ELF
         # or another module, or the main ELF calling into the resident core module (VP2's main
         # ELF calls 0x248dc0 in module 1). Ghidra analyzes each input alone and never sees those

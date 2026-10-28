@@ -37,8 +37,23 @@ def ctor_code_range(module: bytes) -> tuple[int, int, int] | None:
 
 def text_end(module: bytes, text: int) -> int:
     """Header text end, extended to the end of a function that runs past it (module 2's last
-    function ends 0x28 bytes after it)."""
+    function ends 0x28 bytes after it), and over the C++ this-adjusting thunks some modules keep
+    in their data, before the vtables (`j method`, `addiu a0,a0,-N`, two nops; module 10's at
+    +0x6240 are called when leaving Logun)."""
     word = lambda off: struct.unpack_from("<I", module, off)[0] if 0 <= off <= len(module) - 4 else None
+    end = header_text_end(module, text, word)
+    thunk = lambda at: ((word(at) or 0) >> 26 == 0x02 and (word(at + 4) or 0) >> 16 == 0x2484
+                        and word(at + 8) == 0 and word(at + 12) == 0)
+    tail = end + 8 if word(end) == JR_RA else end  # module 15's last function returns just past it
+    aligned = (tail + 15) & ~15  # past the zero padding of the last function
+    if all(word(at) == 0 for at in range(tail, aligned, 4)):
+        while thunk(aligned):
+            aligned += 16
+            end = aligned
+    return end
+
+
+def header_text_end(module: bytes, text: int, word) -> int:
     back = text - 4
     while back > text - 20 and word(back) == 0:
         back -= 4

@@ -220,6 +220,17 @@ namespace
             // Module code starts 0x80 bytes after its in-memory header.
             const ps2_overlays::Module *module = ps2_overlays::residentModuleFor(rdram, slot.address + 0x80u);
             std::cout << " " << slot.role << "=" << (module ? module->name : "-");
+            auto word = [&](uint32_t address) { uint32_t value = 0; std::memcpy(&value, rdram + (address & PS2_RAM_MASK), 4); return value; };
+            if (!module && word(slot.address + 8u) == slot.address)
+            {
+                // A module the port does not know: its header (load, text, data, bss) and a hash of its code.
+                const uint32_t text = word(slot.address + 12u);
+                uint64_t hash = 1469598103934665603ull;
+                for (uint32_t off = 0x80u; off < text && off < 0x100000u; ++off)
+                    hash = (hash ^ rdram[(slot.address + off) & PS2_RAM_MASK]) * 1099511628211ull;
+                std::cout << std::hex << "(unknown: text=0x" << text << " data=0x" << word(slot.address + 16u)
+                          << " bss=0x" << word(slot.address + 20u) << " fnv=" << hash << ")" << std::dec;
+            }
         }
         const std::string file = "vp2s_diag_" + std::to_string(diag.shot++) + ".png";
         std::cout << " screenshot=" << (saveGameFrame(runtime, file) ? file : std::string("-")) << std::endl;
