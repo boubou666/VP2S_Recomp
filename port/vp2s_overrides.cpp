@@ -206,7 +206,8 @@ namespace
     {
         uint32_t file = reg(ctx, 5);
         const uint32_t slot = reg(ctx, 6), index = reg(ctx, 7);
-        static const bool trace = [] { const char *v = std::getenv("VP2S_MODULE_TRACE"); return v && v[0] == '1'; }();
+        static const char traceLevel = [] { const char *v = std::getenv("VP2S_MODULE_TRACE"); return v ? v[0] : '0'; }();
+        const bool trace = traceLevel == '1' || traceLevel == '2';
         if (trace)
         {
             for (uint32_t k = 0; k < index && k < 64u; ++k)
@@ -219,6 +220,19 @@ namespace
                 std::cout << "0123456789abcdef"[b >> 4] << "0123456789abcdef"[b & 15];
             }
             std::cout << std::dec << std::endl;
+            // VP2S_MODULE_TRACE=2: the whole chunk as the loader gets it, to compare with the disc.
+            const bool save = traceLevel == '2';
+            const uint32_t comp = load32(rdram, file + 4u);
+            if (save && comp > 0u && comp < 0x400000u)
+            {
+                char name[96];
+                std::snprintf(name, sizeof(name), "vp2s_chunk_%08x_%08x.bin", slot, file);
+                if (std::FILE *out = std::fopen(name, "wb"))
+                {
+                    std::fwrite(guest(rdram, file), 1, comp + 16u, out);
+                    std::fclose(out);
+                }
+            }
         }
         g_moduleLoad(rdram, ctx, runtime);
         captureUnknownModule(rdram, slot);

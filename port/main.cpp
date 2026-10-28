@@ -504,6 +504,8 @@ int main(int argc, char *argv[])
         // field starts over. At 1 IOP cycle per word the clear was always over by then on the native loop, which hung
         // behind a black fade; at 16 it is still running, as on the console.
         setDefault("PS2X_SPU2_DMA_CYCLES_PER_2BYTES", "16");
+        // VP2's battles move the party with the left stick and the game never switches the pad to analog itself.
+        setDefault("PS2X_PAD_START_ANALOG", "1");
         PS2Runtime runtime;
 
         Diagnostics diagnostics;

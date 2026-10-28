@@ -40,7 +40,8 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 | Field 3D rendering | ✅ |
 | Chapter 1 cutscenes up to Logun; Alicia controllable in the town | ✅ |
 | Field and town at full speed | ✅ |
-| Exploration, battles, menus, saving | 🔧 |
+| Leaving Logun, battle tutorial, first battles, menus, saving | ✅ |
+| Rest of the game (modules captured as they are met, see below) | 🔧 |
 | Widescreen, higher resolution | ⏳ |
 
 ✅ works · 🔧 in progress · ⏳ not reached yet
@@ -155,7 +156,11 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 ## Known issues
 
 - **Frame rate:** the first field scene runs at 50 VSync/s, the town of Logun at 49 VSync/s with about 43 distinct pictures per second.
-- **Not reached yet:** battles, menus and saving (first tests reach Logun in chapter 1).
+- **Played so far:** chapter 1 from Logun to the battle tutorial, a first battle and a save (2026-10-28).
+- **Modules found at run time:** about 350 overlay modules (battle, party, enemies) are not in the disc's plain SLZ/SLE
+  chains: their files carry another layer of encryption that the game removes in memory. The port saves each one the
+  first time the game loads it (`build/captured_modules/`, never committed) and `tools/pipeline.py` recompiles it; a
+  run that meets a new one stops on it until the next build.
 
 ## Repository layout
 

@@ -30,7 +30,14 @@ set(PS2X_ENABLE_AGRESSIVE_LOGS OFF CACHE BOOL "Enable very verbose/agressive PS2
 add_subdirectory("${VP2S_FORK}" ps2recomp EXCLUDE_FROM_ALL)
 
 # Generated code: one directory per recompiled input (main ELF + overlay modules).
-file(GLOB VP2S_INPUT_DIRS LIST_DIRECTORIES true "${VP2S_RECOMP_DIR}/*")
+# Globbed on each input's .done stamp with CONFIGURE_DEPENDS, so a module recompiled later (one captured at run
+# time) reconfigures the build instead of being left out of it.
+file(GLOB VP2S_INPUT_STAMPS CONFIGURE_DEPENDS "${VP2S_RECOMP_DIR}/*/.done")
+set(VP2S_INPUT_DIRS "")
+foreach(stamp IN LISTS VP2S_INPUT_STAMPS)
+    get_filename_component(dir "${stamp}" DIRECTORY)
+    list(APPEND VP2S_INPUT_DIRS "${dir}")
+endforeach()
 set(VP2S_GENERATED_DIRS "")
 set(VP2S_GENERATED_SOURCES "")
 foreach(dir IN LISTS VP2S_INPUT_DIRS)

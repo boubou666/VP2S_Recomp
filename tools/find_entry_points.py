@@ -20,6 +20,7 @@ Targets in the input's own code are attributed to it; a target in another input'
 to every input loaded at another address that has a function start there (a vtable in the
 main ELF can point into the resident core module).
 """
+import bisect
 import csv
 import struct
 from pathlib import Path
@@ -205,6 +206,33 @@ def find_entry_points(images: dict[str, Image], csvs: dict[str, Path]) -> dict[s
             for owner in owners:
                 if target not in known.get(owner, set()):
                     result[owner].add(target)
+
+    # A branch (or j) that crosses a function start lands in the middle of another function as the recompiler
+    # splits them, and is emitted as a jump to its target: the target needs an entry (module 27's 0x36b950
+    # branches to 0x36ba40, past the entry at 0x36ba10, and the tutorial hung there).
+    for name, image in images.items():
+        starts = sorted(known.get(name, set()) | result[name])
+        if not starts:
+            continue
+        for lo, hi in image.code:
+            for addr in range(lo, hi, 4):
+                w = image.word(addr)
+                if w is None:
+                    continue
+                op = w >> 26
+                if op in (0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17) or (op == 0x01 and ((w >> 16) & 0x1F) in (0, 1, 2, 3, 16, 17, 18, 19)):
+                    imm = w & 0xFFFF
+                    target = addr + 4 + ((imm - 0x10000 if imm & 0x8000 else imm) << 2)
+                elif op == 0x02:
+                    target = ((addr + 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)
+                else:
+                    continue
+                if not image.in_code(target) or target in known.get(name, set()) or target in result[name]:
+                    continue
+                low, high = min(addr, target), max(addr, target)
+                i = bisect.bisect_right(starts, low)
+                if i < len(starts) and starts[i] <= high:
+                    result[name].add(target)
 
     # Routines Ghidra missed call others it missed too: follow the jal of every new entry, up
     # to its first jr ra, until no new target appears.
