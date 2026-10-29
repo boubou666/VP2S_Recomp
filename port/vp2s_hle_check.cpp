@@ -92,6 +92,38 @@ int main(int argc, char **argv)
     {
         if (!record.code.empty())
             code = record.code;
+        if (record.startPC == 0x0678u && record.resume == 0u)
+        {
+            // Program 0x0678 (vp2sVu1Hle's kick set-up): the packet kicked, the memory and registers it leaves.
+            static size_t s_kickRuns = 0, s_kickBad = 0;
+            std::vector<uint8_t> data = record.dataBefore;
+            VU1State state = record.stateBefore;
+            std::vector<uint8_t> kicked;
+            ps2x::native::Vu1HleRun run;
+            run.code = code.data();
+            run.data = data.data();
+            run.state = &state;
+            run.startPc = record.startPC;
+            run.top = record.top;
+            run.user = &kicked;
+            run.kick = [](void *user, const uint8_t *bytes, uint32_t size)
+            { auto &out = *static_cast<std::vector<uint8_t> *>(user); out.insert(out.end(), bytes, bytes + size); };
+            const bool handled = vp2sVu1Hle(run);
+            ++s_kickRuns;
+            const bool samePacket = !record.packets.empty() && kicked == record.packets[0];
+            const bool sameData = std::memcmp(data.data() + 0x3aau * 16u, record.dataAfter.data() + 0x3aau * 16u, 5u * 16u) == 0;
+            const bool sameRegs = std::memcmp(state.vf[1], record.stateAfter.vf[1], 5u * 16u) == 0 && state.vi[1] == record.stateAfter.vi[1];
+            if (!handled || !samePacket || !sameData || !sameRegs)
+            {
+                if (s_kickBad++ < 5u)
+                    std::printf("kick setup run %zu: handled %d packet %d (%zu vs %zu bytes) data %d regs %d\n", s_kickRuns, handled ? 1 : 0,
+                                samePacket ? 1 : 0, kicked.size(), record.packets.empty() ? size_t{0} : record.packets[0].size(),
+                                sameData ? 1 : 0, sameRegs ? 1 : 0);
+            }
+            if ((s_kickRuns % 500u) == 0u)
+                std::printf("kick setup: %zu runs, %zu differ\n", s_kickRuns, s_kickBad);
+            continue;
+        }
         if (record.startPC != 0x0880u || record.resume != 0u)
             continue;
         ++runs;

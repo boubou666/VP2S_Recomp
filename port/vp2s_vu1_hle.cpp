@@ -691,8 +691,66 @@ namespace
     }
 }
 
+namespace
+{
+    uint64_t fnv(const uint8_t *bytes, size_t size)
+    {
+        uint64_t hash = 1469598103934665603ull;
+        for (size_t i = 0; i < size; ++i)
+            hash = (hash ^ bytes[i]) * 1099511628211ull;
+        return hash;
+    }
+
+    // A GIF packet's size in VU1 data memory from its tags, up to the EOP tag (0: not one within memory).
+    uint32_t gifPacketBytes(const uint8_t *data, uint32_t qw)
+    {
+        uint32_t bytes = 0;
+        for (int tags = 0; tags < 64; ++tags)
+        {
+            if (qw >= 1024u)
+                return 0u;
+            uint64_t tag = 0;
+            std::memcpy(&tag, data + qw * 16u, 8u);
+            const uint32_t nloop = static_cast<uint32_t>(tag & 0x7FFFu);
+            const uint32_t flg = static_cast<uint32_t>((tag >> 58) & 3u);
+            uint32_t nreg = static_cast<uint32_t>((tag >> 60) & 0xFu);
+            if (nreg == 0u)
+                nreg = 16u;
+            const uint32_t qwords = flg == 0u ? nloop * nreg : flg == 1u ? (nloop * nreg + 1u) / 2u : nloop;
+            bytes += 16u + qwords * 16u;
+            qw += 1u + qwords;
+            if ((tag >> 15) & 1u)
+                return qw <= 1024u ? bytes : 0u;
+        }
+        return 0u;
+    }
+
+    // Program 0x0678 (every known build, checked by its code's hash): copies mem[96..100] to 0x3aa and kicks the
+    // GS packet there (a register set-up between object batches), leaving vf01..vf05 = mem[96..100], vi01 = 0x3aa.
+    bool runKickSetup(ps2x::native::Vu1HleRun &run)
+    {
+        constexpr uint64_t kCodeHash = 0x124eb493c8720819ull; // code 0x678..0x6e0
+        if (fnv(run.code + 0x678u, 0x68u) != kCodeHash)
+            return false;
+        constexpr uint32_t kTo = 0x3aau;
+        std::memmove(run.data + kTo * 16u, run.data + 96u * 16u, 5u * 16u);
+        for (uint32_t r = 0; r < 5u; ++r)
+            std::memcpy(run.state->vf[1 + r], run.data + (96u + r) * 16u, 16u);
+        run.state->vi[1] = static_cast<int32_t>(kTo);
+        const uint32_t bytes = gifPacketBytes(run.data, kTo);
+        if (bytes != 0u)
+            run.kick(run.user, run.data + kTo * 16u, bytes);
+        return true;
+    }
+}
+
 bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
 {
+    if (run.startPc == 0x0678u && run.code && run.data && run.state && run.kick && runKickSetup(run))
+    {
+        countHle(15);
+        return true;
+    }
     if (run.startPc != 0x0880u || !run.code || !run.data || !run.state || !run.kick)
     {
         static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
