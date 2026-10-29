@@ -112,7 +112,11 @@ int main(int argc, char **argv)
             const Vertex &g = got[i], &w = want[i];
             const bool wantAdc = (w.xyz[3] & 0x8000u) != 0u;
             if (g.k >= 2u && (((g.xyz[3] & 0x8000u) != 0u) != wantAdc))
-                ++badAdc;
+            {
+                if (badAdc++ < 20u)
+                    std::printf("adc mismatch: run %zu vertex %zu (strip index %u) got %d want %d\n", runs, i, g.k,
+                                (g.xyz[3] & 0x8000u) != 0u ? 1 : 0, wantAdc ? 1 : 0);
+            }
             if (wantAdc)
                 continue;
             ++vertices;

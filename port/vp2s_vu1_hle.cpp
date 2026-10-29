@@ -144,6 +144,23 @@ namespace
         return layout;
     }
 
+    // VP2S_NATIVE_MESH_LOG: each distinct case the native code does not cover yet, once ("setup 36", "lighting 3/0").
+    void noteUnhandled(const char *what, int a, int b)
+    {
+        static const bool s_on = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
+        if (!s_on)
+            return;
+        static std::mutex s_mutex;
+        static std::vector<std::pair<int, int>> s_seen[2];
+        const int kind = what[0] == 's' ? 0 : 1;
+        std::lock_guard<std::mutex> lock(s_mutex);
+        for (const auto &seen : s_seen[kind])
+            if (seen.first == a && seen.second == b)
+                return;
+        s_seen[kind].emplace_back(a, b);
+        std::fprintf(stderr, "[vp2s-native] not handled: %s %d/%d\n", what, a, b);
+    }
+
     // The set-up routines (header 5.x..w with data at 4.x..w), in order. False for one not done yet.
     bool runSetup(Memory &mem, uint32_t top)
     {
@@ -223,6 +240,7 @@ namespace
                 break;
             }
             default:
+                noteUnhandled("setup routine/slot", routine, r);
                 return false;
             }
         }
@@ -232,9 +250,34 @@ namespace
     // Vertex colours lit in place (lighting table D, mem[14].w == 0). False for a mode not done yet.
     bool runLighting(Memory &mem, const VU1State &state, uint32_t top, const Layout &layout)
     {
-        if (mem.i(14u, 3) != 0)
-            return false;
         const int32_t mode = mem.i(top + 8u, 1);
+        if (mem.i(14u, 3) != 0)
+        {
+            // Lighting table A (mem[14].w != 0), then B (mem[14].y) and C (mem[14].z) when set. A's modes 1-3 are
+            // table D's code; its mode 0 (0x31c0) gives every vertex mem[13] as it is (no mem[14].x test).
+            if (mem.i(14u, 1) != 0 || mem.i(14u, 2) != 0 || (mode != 0 && mode != 1))
+            {
+                noteUnhandled("lighting mode/table (mem[14].w)", mode, mem.i(14u, 3) * 100 + mem.i(14u, 1) * 10 + mem.i(14u, 2));
+                return false;
+            }
+            if (mode == 0)
+            {
+                const Vec4 factor = mem.vf(13u);
+                const int32_t count = mem.i(top + 2u, 1);
+                const uint32_t vertices = top + static_cast<uint32_t>(mem.i(top, 1));
+                const Vec4 limit = mem.vf(0u);
+                for (int32_t k = 0; k < count; ++k)
+                {
+                    const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
+                    for (uint32_t c = 0; c < 4u; ++c)
+                    {
+                        const float lit = static_cast<float>(mem.i(v + 2u, c)) * factor[c];
+                        mem.setI(v + 2u, c, ftoi(std::max(0.0f, std::min(lit, limit[c]))));
+                    }
+                }
+                return true;
+            }
+        }
         const int32_t count = mem.i(top + 2u, 1);
         const uint32_t vertices = top + static_cast<uint32_t>(mem.i(top, 1));
         const Vec4 limit = mem.vf(0u);
@@ -282,6 +325,7 @@ namespace
             }
             return true;
         }
+        noteUnhandled("lighting mode/table (mem[14].w)", mode, 0);
         return false;
     }
 
@@ -377,6 +421,16 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
             {
                 const float cross = (sx[0] - sx[1]) * (sy[1] - sy[2]) - (sy[0] - sy[1]) * (sx[1] - sx[2]);
                 adc = cross * ((k % 2u) == 0u ? 1.0f : -1.0f) > 0.0f;
+                static const bool s_adcDebug = std::getenv("VP2S_ADC_DEBUG") != nullptr;
+                if (s_adcDebug && adc)
+                    std::printf("adc-debug cull k=%u cross=%g\n", k, cross);
+            }
+            else if (adc && k >= 2u)
+            {
+                static const bool s_adcDebug = std::getenv("VP2S_ADC_DEBUG") != nullptr;
+                if (s_adcDebug)
+                    std::printf("adc-debug clip k=%u out=%d%d%d cc=%g,%g,%g,%g\n", k, outside[0] ? 1 : 0, outside[1] ? 1 : 0,
+                                outside[2] ? 1 : 0, cc[0], cc[1], cc[2], cc[3]);
             }
             const float u = static_cast<float>(mem.i(v + 1u, 0)) / 4096.0f, t = static_cast<float>(mem.i(v + 1u, 1)) / 4096.0f;
             const float r = static_cast<float>(mem.i(v + 1u, 2)) / 4096.0f;
