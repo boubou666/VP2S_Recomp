@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -290,51 +291,129 @@ namespace
         return true;
     }
 
-    // Vertex colours lit in place (lighting table D, mem[14].w == 0). False for a mode not done yet.
+    float inverseLength(float x, float y, float z) // ERLENG
+    {
+        const float length = std::sqrt(x * x + y * y + z * z);
+        return length != 0.0f ? 1.0f / length : length;
+    }
+
+    // Lighting table C (mem[14].z, after table A), pass n (0, then 1 when mem[14].z is 2): a spot light at mem[28 + n],
+    // direction mem[30 + n], colour mem[32 + n], mem[34 + n] its cone (.x cosine squared offset, .y scale) and
+    // strength (.z, over the distance). Its colour times the light is added to each vertex's factor (.xyz). Mode 3
+    // adds a specular part: the half vector of the light and the vector to vf08, weighed by header 11.z, squared
+    // header 9.w times; header 11.y weighs the diffuse part. False for a case not done (modes 2, power <= 0).
+    bool addSpotLight(const Memory &mem, const VU1State &state, uint32_t top, uint32_t vertices, int32_t count,
+                      int32_t mode, uint32_t n, std::vector<Vec4> &factors)
+    {
+        const int32_t power = mem.i(top + 9u, 3);
+        if (mode == 2 || (mode == 3 && power <= 0))
+            return false;
+        const Vec4 light = mem.vf(28u + n), direction = mem.vf(30u + n), colour = mem.vf(32u + n), cone = mem.vf(34u + n);
+        const Vec4 weights = mem.vf(top + 11u);
+        const float *eyePoint = state.vf[8];
+        for (int32_t k = 0; k < count; ++k)
+        {
+            const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
+            const Vec4 normal = mem.vf(v), p = mem.vf(v + 3u);
+            const float toLight[3] = {light[0] - p[0], light[1] - p[1], light[2] - p[2]};
+            const float inverse = inverseLength(toLight[0], toLight[1], toLight[2]);
+            float unit[3];
+            for (int c = 0; c < 3; ++c)
+                unit[c] = toLight[c] * inverse;
+            const float cosine = direction[0] * unit[0] + direction[1] * unit[1] + direction[2] * unit[2];
+            // The microprogram tests the cosine's MAC flags (sign or zero x: FMAND 0x88): no light behind the cone.
+            float spot = 0.0f;
+            if (cosine > 0.0f)
+                spot = std::min(std::max((cosine * cosine - cone[0]) * cone[1], 0.0f), 1.0f);
+            const float strength = cone[2] * inverse;
+            float diffuse = 0.0f;
+            {
+                float t[3];
+                for (int c = 0; c < 3; ++c)
+                    t[c] = unit[c] * (normal[c] * strength) * spot;
+                diffuse = std::max(t[0] + t[1] + t[2], 0.0f);
+            }
+            if (mode != 3)
+            {
+                for (int c = 0; c < 3; ++c)
+                    factors[k][c] = colour[c] * diffuse + factors[k][c];
+                continue;
+            }
+            const float toEye[3] = {eyePoint[0] - p[0], eyePoint[1] - p[1], eyePoint[2] - p[2]};
+            const float squared = toEye[0] * toEye[0] + toEye[1] * toEye[1] + toEye[2] * toEye[2];
+            const float root = std::sqrt(std::fabs(squared));
+            const float q = root != 0.0f ? 1.0f / root : std::numeric_limits<float>::max(); // RSQRT 1, |E|^2
+            float half[3];
+            for (int c = 0; c < 3; ++c)
+                half[c] = (toEye[c] * q + unit[c]) * weights[2];
+            float s = std::max(half[0] * normal[0] + half[1] * normal[1] + half[2] * normal[2], 0.0f);
+            for (int32_t r = 0; r < power; ++r)
+                s *= s;
+            const float specular = (s * spot) * strength;
+            diffuse *= weights[1];
+            for (int c = 0; c < 3; ++c)
+                factors[k][c] = (colour[c] * diffuse + colour[c] * specular) + factors[k][c];
+        }
+        return true;
+    }
+
+    bool computeFactors(const Memory &mem, const VU1State &state, uint32_t top, const Layout &layout, int32_t mode,
+                        bool tableA, uint32_t vertices, int32_t count, std::vector<Vec4> &factors);
+
+    // Vertex colours lit in place: each vertex's factor from lighting table D (mem[14].w == 0) or A, then table C's
+    // spot lights, then colour times factor. False for a case not done yet.
     bool runLighting(Memory &mem, const VU1State &state, uint32_t top, const Layout &layout)
     {
         const int32_t mode = mem.i(top + 8u, 1);
-        if (mem.i(14u, 3) != 0)
+        const int32_t count = mem.i(top + 2u, 1);
+        const uint32_t vertices = top + static_cast<uint32_t>(mem.i(top, 1));
+        thread_local std::vector<Vec4> factors;
+        factors.assign(static_cast<size_t>(std::max(count, 0)), Vec4{});
+        const bool tableA = mem.i(14u, 3) != 0;
+        const int32_t spots = tableA ? mem.i(14u, 2) : 0;
+        if (tableA)
         {
             // Lighting table A (mem[14].w != 0), then B (mem[14].y) and C (mem[14].z) when set. A's modes 1-3 are
-            // table D's code; its mode 0 (0x31c0) gives every vertex mem[13] as it is (no mem[14].x test).
-            if (mem.i(14u, 1) != 0 || mem.i(14u, 2) != 0 || (mode != 0 && mode != 1 && mode != 3))
+            // table D's code; its mode 0 gives every vertex mem[13] as it is (no mem[14].x test).
+            if (mem.i(14u, 1) != 0 || (mode != 0 && mode != 1 && mode != 3))
             {
                 noteUnhandled("lighting mode/table (mem[14].w)", mode, mem.i(14u, 3) * 100 + mem.i(14u, 1) * 10 + mem.i(14u, 2));
                 return false;
             }
-            if (mode == 0)
+        }
+        if (!computeFactors(mem, state, top, layout, mode, tableA, vertices, count, factors))
+            return false;
+        if (spots != 0)
+        {
+            if (!addSpotLight(mem, state, top, vertices, count, mode, 0u, factors) ||
+                (spots == 2 && !addSpotLight(mem, state, top, vertices, count, mode, 1u, factors)))
             {
-                const Vec4 factor = mem.vf(13u);
-                const int32_t count = mem.i(top + 2u, 1);
-                const uint32_t vertices = top + static_cast<uint32_t>(mem.i(top, 1));
-                const Vec4 limit = mem.vf(0u);
-                for (int32_t k = 0; k < count; ++k)
-                {
-                    const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
-                    for (uint32_t c = 0; c < 4u; ++c)
-                    {
-                        const float lit = static_cast<float>(mem.i(v + 2u, c)) * factor[c];
-                        mem.setI(v + 2u, c, ftoi(std::max(0.0f, std::min(lit, limit[c]))));
-                    }
-                }
-                return true;
+                noteUnhandled("lighting table C", mode, spots);
+                return false;
             }
         }
-        const int32_t count = mem.i(top + 2u, 1);
-        const uint32_t vertices = top + static_cast<uint32_t>(mem.i(top, 1));
         const Vec4 limit = mem.vf(0u);
-        auto apply = [&](uint32_t v, const Vec4 &factor) {
+        for (int32_t k = 0; k < count; ++k)
+        {
+            const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
             for (uint32_t c = 0; c < 4u; ++c)
             {
-                const float lit = static_cast<float>(mem.i(v + 2u, c)) * factor[c];
+                const float lit = static_cast<float>(mem.i(v + 2u, c)) * factors[k][c];
                 mem.setI(v + 2u, c, ftoi(std::max(0.0f, std::min(lit, limit[c]))));
             }
-        };
+        }
+        return true;
+    }
+
+    // Table A or D's factor for each vertex (modes 0, 1, 3).
+    bool computeFactors(const Memory &mem, const VU1State &state, uint32_t top, const Layout &layout, int32_t mode,
+                        bool tableA, uint32_t vertices, int32_t count, std::vector<Vec4> &factors)
+    {
+        auto apply = [&](uint32_t v, const Vec4 &factor) { factors[(v - vertices) / 4u] = factor; };
         if (mode == 0)
         {
             Vec4 scale = mem.vf(13u);
-            if (mem.i(14u, 0) == 0)
+            if (!tableA && mem.i(14u, 0) == 0)
                 scale[0] = scale[1] = scale[2] = 0.0f;
             for (int32_t k = 0; k < count; ++k)
                 apply(vertices + 4u * static_cast<uint32_t>(k), scale);
@@ -540,7 +619,8 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
             if (!adc && culls && k >= 2u)
             {
                 const float cross = (sx[0] - sx[1]) * (sy[1] - sy[2]) - (sy[0] - sy[1]) * (sx[1] - sx[2]);
-                adc = cross * ((k % 2u) == 0u ? 1.0f : -1.0f) > 0.0f;
+                // The microprogram tests the sign flag: a degenerate triangle (+0, VP2's padding strips) is culled too.
+                adc = !std::signbit(cross * ((k % 2u) == 0u ? 1.0f : -1.0f));
                 static const bool s_adcDebug = std::getenv("VP2S_ADC_DEBUG") != nullptr;
                 if (s_adcDebug && adc)
                     std::printf("adc-debug cull k=%u cross=%g\n", k, cross);
