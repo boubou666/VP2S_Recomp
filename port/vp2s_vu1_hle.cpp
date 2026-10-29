@@ -9,6 +9,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 // The object a run of program 0x0880 draws, decoded from VU1 data memory (docs/vp2_vu1.md, checked against recorded
 // runs with tools/vp2_mesh_proto.py and vp2s_hle_check):
@@ -541,6 +542,32 @@ namespace
     // VP2S_NATIVE_MESH_LOG: every 2 s, the VU1 programs seen: 0-7 objects sent as packets (by PRIM type), 8 drawn
     // natively, 9 culled whole, 10 another program (the VU1 runs it); the mesh program not handled here: 11 another
     // layout, 12 cull sum 3, 13 VI41.z set, 14 setup or lighting, 15 later.
+    // The other VU1 programs by start PC since the last line (VP2S_NATIVE_MESH_LOG), most run first.
+    std::mutex g_otherMutex;
+    std::unordered_map<uint32_t, uint64_t> g_otherPrograms;
+
+    void noteOtherProgram(uint32_t pc)
+    {
+        std::lock_guard<std::mutex> lock(g_otherMutex);
+        ++g_otherPrograms[pc];
+    }
+
+    std::string otherProgramsLine()
+    {
+        std::lock_guard<std::mutex> lock(g_otherMutex);
+        std::vector<std::pair<uint32_t, uint64_t>> programs(g_otherPrograms.begin(), g_otherPrograms.end());
+        g_otherPrograms.clear();
+        std::sort(programs.begin(), programs.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+        std::string line = " | other programs:";
+        char buffer[32];
+        for (size_t i = 0; i < programs.size() && i < 8u; ++i)
+        {
+            std::snprintf(buffer, sizeof(buffer), " %04x=%llu", programs[i].first, static_cast<unsigned long long>(programs[i].second));
+            line += buffer;
+        }
+        return line;
+    }
+
     void countHle(int kind)
     {
         static const bool s_on = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
@@ -557,6 +584,7 @@ namespace
         std::string line = "[vp2s-native] 2 s:";
         for (uint64_t count : s_counts)
             line += " " + std::to_string(count);
+        line += otherProgramsLine();
         std::fprintf(stderr, "%s (packets by PRIM type 0-7, native, culled, other program, not handled: layout, cull 3, vi41z, setup/lighting, later)\n", line.c_str());
         std::fill(std::begin(s_counts), std::end(s_counts), 0ull);
         s_since = now;
@@ -567,6 +595,9 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
 {
     if (run.startPc != 0x0880u || !run.code || !run.data || !run.state || !run.kick)
     {
+        static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
+        if (s_log)
+            noteOtherProgram(run.startPc);
         countHle(10);
         return false;
     }
