@@ -484,9 +484,11 @@ int main(int argc, char *argv[])
         };
         setDefault("PS2X_VIF1_THREAD", "1");
         setDefault("PS2X_GS_LAG", "1");
-        // VP2S_NATIVE_MESH=1 draws VP2's meshes with the native renderer, into the native GS backend's targets.
-        const char *nativeMesh = std::getenv("VP2S_NATIVE_MESH");
-        setDefault("PS2X_GS_RENDERER", nativeMesh && nativeMesh[0] == '1' ? "native" : "parallel");
+        // No emulated GS by default: VP2's meshes are drawn by the native renderer (VP2S_NATIVE_MESH=1) into the native
+        // GS backend's targets, which also draws the rest of the GS stream on the GPU. VP2S_NATIVE_MESH=0 sends the
+        // meshes as GS packets to the same backend; PS2X_GS_RENDERER=parallel still selects paraLLEl-GS.
+        setDefault("VP2S_NATIVE_MESH", "1");
+        setDefault("PS2X_GS_RENDERER", "native");
         setDefault("PS2X_IOP_THREAD", "1");
         // Relaxed GS timing: with the GS lag, SIGNAL/FINISH reach the EE once the modelled drawing time of what came
         // before has passed; VP2 polls FINISH every frame, so the model held the EE back for nothing on a GPU that draws

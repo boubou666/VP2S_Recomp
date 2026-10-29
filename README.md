@@ -57,7 +57,7 @@ PS2Recomp ports. Where it stands:
 | Game code (EE, MIPS R5900) | **Native C++**: the main ELF and every overlay module, including the modules the disc hides behind an extra encryption layer, captured from memory the first time the game loads them and recompiled | Decrypt that layer to extract all of them (about 350) at once |
 | VU0 (macro mode) | **Native**: recompiled with the EE code | |
 | VU1 mesh microprogram (pc 0x0880, almost every model) | **Native C++** (`port/vp2s_vu1_hle.cpp`): same GS output, every drawn vertex checked against the VU1 traces | Its last cases (set-up routine 36, lighting mode 3), the three small microprograms left |
-| GS (graphics) | Emulated on the GPU (paraLLEl-GS); a native OpenGL backend exists but is slower | Draw the models directly from the native microprogram's vertices: no GS packets |
+| GS (graphics) | **Native renderer** (default): the models are drawn directly from the native microprogram's vertices, with no GS packets built for them, into an OpenGL backend that also draws the rest of the GS stream (menus, text, effects) and reads textures from a GPU copy of GS memory. paraLLEl-GS stays as a fallback (`PS2X_GS_RENDERER=parallel`) | The 2D and effect draws as native passes too, higher internal resolution |
 | VIF1 / DMA | Emulated | Feed the native microprogram from main memory |
 | Frame pacing | PAL vblank by default; a native loop (`VP2S_NATIVE=1`) paces frames on the host with the real frame time | Native loop by default, frame rate menu (30, 60, unlimited) |
 | IOP and sound (SPU2) | Interpreted IOP, emulated SPU2 | Recompiled sound modules and a native mixer on wall time (shared work with the TMB port) |
@@ -157,7 +157,8 @@ A controller is used when one is connected; otherwise the keyboard (US key posit
 | `VP2S_VBLANK_HOLD=1` | Hold a vblank (up to 6 ms, `VP2S_VBLANK_HOLD_US`) while VP2 is still drawing its frame |
 | `PS2X_SHOW_FPS=0` | Start with the fps and EE speed counter hidden (F3 toggles it) |
 | `PS2X_IOP_THREAD=0` | Run the IOP on the game thread (by default it has a thread of its own: about 7% faster on the field) |
-| `PS2X_GS_RENDERER=cpu` | Draw with the CPU rasterizer. By default the GS runs on the GPU with [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) (Vulkan compute; the CPU rasterizer if Vulkan is unavailable): about 50% faster on the field |
+| `VP2S_NATIVE_MESH=0` | Send VP2's models to the native renderer as GS packets instead of native draws (comparison) |
+| `PS2X_GS_RENDERER=parallel`, `=cpu` | Use the emulated GS instead of the native renderer: [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) (Vulkan compute) or the CPU rasterizer |
 | `VP2S_WALLCLOCK_CATCHUP=1` | Fast-forward emulated time to wall-clock time (off by default: it starves the music thread) |
 | `VP2S_DUMP=<address>:<size>`, `VP2S_WATCH=<address>,…` | Dump a memory range, or print memory words on every diagnostic pass |
 | `PS2X_PAD_SCRIPT=t:BUTTON[/ms],…` | Scripted button presses (seconds from start), for unattended runs |
