@@ -119,6 +119,7 @@ namespace
         uint32_t setupTable = 0;
         uint32_t lightTableD = 0;
         bool clampFourthLight = true;
+        bool mode3FullFourthLight = false;
     };
 
     Layout findLayout(const uint8_t *code)
@@ -161,6 +162,23 @@ namespace
                 if ((up & 0x3Fu) == 0x10u) // MAXx
                 {
                     layout.clampFourthLight = ((up >> 21) & 1u) != 0u;
+                    break;
+                }
+            }
+        }
+        // Mode 3: the diffuse directions scaled by header 12.y, the fourth light's too (MULy.xyzw vf16) or not (MULy.xyz,
+        // then MULx.w: the fourth light by 12.x, not clamped and without specular).
+        const uint32_t mode3 = (tableD + 6u) * 8u;
+        const uint32_t branch3 = lower(code, mode3);
+        if (((branch3 >> 25) & 0x7Fu) == 0x20u)
+        {
+            const uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(mode3) + 8 + signedImm11(branch3) * 8);
+            for (uint32_t pc = target; pc < target + 0x100u && pc < 0x4000u; pc += 8u)
+            {
+                const uint32_t up = upper(code, pc);
+                if ((up & 0x3Fu) == 0x19u && ((up >> 6) & 0x1Fu) == 16u) // MULy vf16
+                {
+                    layout.mode3FullFourthLight = ((up >> 21) & 1u) != 0u;
                     break;
                 }
             }
@@ -383,11 +401,12 @@ namespace
                 float diffuse[4], specular[4];
                 for (int i = 0; i < 4; ++i)
                 {
-                    // The fourth light (.w) is a plain diffuse one: not weighed by header 12.y, no specular (the
-                    // microprogram's factors, read back from its table at 0x380, say so).
-                    const float weight = i == 3 ? 1.0f : weights[1];
+                    // The fourth light (.w): in one library build like the others; in the other weighed by header
+                    // 12.x instead of .y, not clamped, and without specular.
+                    const bool plain = i == 3 && !layout.mode3FullFourthLight;
+                    const float weight = plain ? weights[0] : weights[1];
                     diffuse[i] = (d[0][i] * weight) * n[0] + (d[1][i] * weight) * n[1] + (d[2][i] * weight) * n[2];
-                    if (s_variant != 5)
+                    if (s_variant != 5 && !plain)
                         diffuse[i] = std::max(0.0f, diffuse[i]);
                     float s = (d[0][i] * weights[2] + eye[0] * inverse) * n[0] + (d[1][i] * weights[2] + eye[1] * inverse) * n[1] +
                               (d[2][i] * weights[2] + eye[2] * inverse) * n[2];
@@ -395,7 +414,7 @@ namespace
                         s = std::max(0.0f, s);
                     for (int32_t r = 0; r < squarings; ++r)
                         s *= s;
-                    specular[i] = i == 3 ? 0.0f : s;
+                    specular[i] = plain ? 0.0f : s;
                 }
                 Vec4 factor{};
                 for (int c = 0; c < 3; ++c)
@@ -744,6 +763,36 @@ namespace
     }
 }
 
+bool vp2sMeshPrefix(const uint8_t *code, const uint8_t *data, uint32_t top, std::vector<uint8_t> &prefix)
+{
+    // 0x0770..0x0880 but the pair at 0x07a0 (IADDIU vi01 to the set-up dispatcher, which differs by build), checked
+    // against the dispatcher the mesh program's BAL at 0x08a8 reaches.
+    std::array<uint8_t, 0x110u> bytes;
+    std::memcpy(bytes.data(), code + 0x770u, bytes.size());
+    std::memset(bytes.data() + 0x30u, 0, 8u);
+    if (fnv(bytes.data(), bytes.size()) != 0x633d036a69d5ea3aull)
+        return false;
+    const uint32_t bal = lower(code, 0x08a8u);
+    if (((bal >> 25) & 0x7Fu) != 0x21u)
+        return false;
+    const uint32_t dispatcher = static_cast<uint32_t>(0x08a8 + 8 + signedImm11(bal) * 8);
+    const uint32_t iaddiu = lower(code, 0x07a0u);
+    if ((((iaddiu >> 21) & 0xFu) << 11 | (iaddiu & 0x7FFu)) * 8u != dispatcher)
+        return false;
+    const auto word = [&](uint32_t qw, uint32_t lane) {
+        int32_t value;
+        std::memcpy(&value, data + (qw % 1024u) * 16u + lane * 4u, 4u);
+        return value;
+    };
+    top %= 1024u;
+    const uint32_t third = (word(15u, 1) | word(top + 8u, 3)) != 0 ? 66u : 65u;
+    const uint32_t from[5] = {top + 7u, top + 8u, third, top + 9u, top + 10u};
+    prefix.resize(5u * 16u);
+    for (uint32_t q = 0; q < 5u; ++q)
+        std::memcpy(prefix.data() + q * 16u, data + (from[q] % 1024u) * 16u, 16u);
+    return true;
+}
+
 bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
 {
     if (run.startPc == 0x0678u && run.code && run.data && run.state && run.kick && runKickSetup(run))
@@ -751,7 +800,10 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
         countHle(15);
         return true;
     }
-    if (run.startPc != 0x0880u || !run.code || !run.data || !run.state || !run.kick)
+    thread_local std::vector<uint8_t> prefix;
+    prefix.clear();
+    const bool prefixed = run.startPc == 0x0770u && run.code && run.data && vp2sMeshPrefix(run.code, run.data, run.top, prefix);
+    if ((run.startPc != 0x0880u && !prefixed) || !run.code || !run.data || !run.state || !run.kick)
     {
         static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
         if (s_log)
@@ -767,6 +819,9 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
         countHle(g_rejected);
         return false;
     }
+    // Program 0x0770 kicks its register prefix first (XGKICK vi07), then the object.
+    if (prefixed)
+        run.kick(run.user, prefix.data(), static_cast<uint32_t>(prefix.size()));
     static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
     static int s_logged = 0;
     if (native && s_log && s_logged < 12)

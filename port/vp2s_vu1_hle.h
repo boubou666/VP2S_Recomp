@@ -21,6 +21,10 @@ struct Vp2sNativeMesh
 bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1State &state, uint32_t top,
                          std::vector<uint8_t> &packet, Vp2sNativeMesh *native = nullptr);
 
+// Program 0x0770, the mesh program with a register prefix: the 5-quadword GIF packet it kicks before the object (from
+// the object's header 7..10 and mem[65] or mem[66]); false when VU1 code memory is not that program.
+bool vp2sMeshPrefix(const uint8_t *code, const uint8_t *data, uint32_t top, std::vector<uint8_t> &prefix);
+
 // VP2S_NATIVE_MESH=1: the objects go to ps2x::native::Renderer, drawn in the GS stream at their place (native GS
 // renderer), instead of their GS packets. Call at each game frame's end (the frame wait).
 bool vp2sNativeMeshEnabled();

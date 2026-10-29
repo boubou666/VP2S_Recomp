@@ -124,8 +124,27 @@ int main(int argc, char **argv)
                 std::printf("kick setup: %zu runs, %zu differ\n", s_kickRuns, s_kickBad);
             continue;
         }
-        if (record.startPC != 0x0880u || record.resume != 0u)
+        if ((record.startPC != 0x0880u && record.startPC != 0x0770u) || record.resume != 0u)
             continue;
+        // Program 0x0770: its register prefix is the first packet it kicks, the object the second.
+        size_t meshPacket = 0;
+        if (record.startPC == 0x0770u)
+        {
+            static size_t s_prefixRuns = 0, s_prefixBad = 0;
+            std::vector<uint8_t> prefix;
+            const bool known = vp2sMeshPrefix(code.data(), record.dataBefore.data(), record.top, prefix);
+            ++s_prefixRuns;
+            if (!known || record.packets.size() < 2u || prefix != record.packets[0])
+            {
+                if (s_prefixBad++ < 5u)
+                    std::printf("prefix run %zu: known %d packets %zu first %zu bytes\n", s_prefixRuns, known ? 1 : 0, record.packets.size(),
+                                record.packets.empty() ? size_t{0} : record.packets[0].size());
+                continue;
+            }
+            meshPacket = 1;
+            if ((s_prefixRuns % 500u) == 0u)
+                std::printf("prefix: %zu runs, %zu differ\n", s_prefixRuns, s_prefixBad);
+        }
         ++runs;
         const auto start = std::chrono::steady_clock::now();
         bool ok = false;
@@ -136,7 +155,7 @@ int main(int argc, char **argv)
             continue;
         ++built;
         const std::vector<Vertex> got = parse(packet);
-        const std::vector<Vertex> want = record.packets.empty() ? std::vector<Vertex>{} : parse(record.packets[0]);
+        const std::vector<Vertex> want = record.packets.size() <= meshPacket ? std::vector<Vertex>{} : parse(record.packets[meshPacket]);
         if (got.size() != want.size())
             ++badCount;
         for (size_t i = 0; i < got.size() && i < want.size(); ++i)
