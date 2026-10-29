@@ -27,12 +27,36 @@ namespace
 
     constexpr uint32_t kQwords = 1024u;
 
+    // VU1 data memory as the run sees it: reads go to the VU's own memory until a quadword is written, which is then
+    // copied here first (copy on write: an object touches a few hundred quadwords of the 1024, and a run the native
+    // code does not handle after all leaves the VU's memory as it was for the microprogram).
     struct Memory
     {
+        const uint8_t *source = nullptr;
         std::array<uint8_t, kQwords * 16u> bytes{};
+        std::array<uint64_t, kQwords / 64u> written{};
 
-        uint8_t *at(uint32_t qw, uint32_t lane) { return bytes.data() + (qw % kQwords) * 16u + lane * 4u; }
-        const uint8_t *at(uint32_t qw, uint32_t lane) const { return bytes.data() + (qw % kQwords) * 16u + lane * 4u; }
+        void reset(const uint8_t *data)
+        {
+            source = data;
+            written.fill(0u);
+        }
+        bool isWritten(uint32_t qw) const { return ((written[qw >> 6] >> (qw & 63u)) & 1u) != 0u; }
+        uint8_t *at(uint32_t qw, uint32_t lane)
+        {
+            qw %= kQwords;
+            if (!isWritten(qw))
+            {
+                std::memcpy(bytes.data() + qw * 16u, source + qw * 16u, 16u);
+                written[qw >> 6] |= 1ull << (qw & 63u);
+            }
+            return bytes.data() + qw * 16u + lane * 4u;
+        }
+        const uint8_t *at(uint32_t qw, uint32_t lane) const
+        {
+            qw %= kQwords;
+            return (isWritten(qw) ? bytes.data() : source) + qw * 16u + lane * 4u;
+        }
         int32_t i(uint32_t qw, uint32_t lane) const
         {
             int32_t v;
@@ -359,7 +383,7 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
     if (!layout.valid)
         return false;
     static Memory mem; // one run at a time (the VIF1 thread)
-    std::memcpy(mem.bytes.data(), data, mem.bytes.size());
+    mem.reset(data);
     top %= kQwords;
     const int32_t cullSum = mem.i(top + 15u, 0) + mem.i(41u, 2);
     g_rejected = cullSum == 3 ? 12 : 13;
