@@ -60,7 +60,7 @@ PS2Recomp ports. Where it stands:
 | GS (graphics) | **Native renderer** (default): the models are drawn directly from the native microprogram's vertices, with no GS packets built for them, into an OpenGL backend that also draws the rest of the GS stream (menus, text, effects) and reads textures from a GPU copy of GS memory. paraLLEl-GS stays as a fallback (`PS2X_GS_RENDERER=parallel`) | The 2D and effect draws as native passes too, higher internal resolution |
 | VIF1 / DMA | Emulated | Feed the native microprogram from main memory |
 | Frame pacing | PAL vblank by default; a native loop (`VP2S_NATIVE=1`) paces frames on the host with the real frame time | Native loop by default, frame rate menu (30, 60, unlimited) |
-| IOP and sound (SPU2) | Interpreted IOP, emulated SPU2 | Recompiled sound modules and a native mixer on wall time (shared work with the TMB port) |
+| IOP and sound (SPU2) | **Native IOP modules**: the ten modules the game loads (its sound driver included) are dumped once (`PS2X_IOP_DUMP_MODULES`), recompiled to C++ by `tools/iop_recomp.py` (shared with the TMB, JC2 and TTA ports) and run in place of the interpreter; emulated SPU2 | A native mixer on wall time (`PS2X_SPU2_WALLCLOCK`, from the TMB port) |
 
 
 

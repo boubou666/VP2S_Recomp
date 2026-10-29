@@ -490,6 +490,9 @@ int main(int argc, char *argv[])
         setDefault("VP2S_NATIVE_MESH", "1");
         setDefault("PS2X_GS_RENDERER", "native");
         setDefault("PS2X_IOP_THREAD", "1");
+        // The game's IOP modules (its sound driver included) run as recompiled C++ when the build has them
+        // (build/iop_native, tools/iop_recomp.py): the IOP thread no longer interprets them. PS2X_IOP_NATIVE=0 does.
+        setDefault("PS2X_IOP_NATIVE", "1");
         // Relaxed GS timing: with the GS lag, SIGNAL/FINISH reach the EE once the modelled drawing time of what came
         // before has passed; VP2 polls FINISH every frame, so the model held the EE back for nothing on a GPU that draws
         // far faster. At 0 the events come as the worker submits the frame: Logun 57% -> 72% of real-time speed.
