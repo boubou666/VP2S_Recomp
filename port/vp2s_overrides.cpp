@@ -318,7 +318,9 @@ namespace
             std::cout << "[vp2s] VU1 mesh program done natively" << std::endl;
         }
 
-        if (const char *native = std::getenv("VP2S_NATIVE"); native && native[0] == '1')
+        // The native loop is the default (frames paced by the host, real-time step, no vblank in VP2's pacing):
+        // VP2S_NATIVE=0 goes back to the PAL vblank pacing.
+        if (const char *native = std::getenv("VP2S_NATIVE"); !native || native[0] != '0')
         {
             runtime.eeScheduler().setNativeFrames(true);
             // VP2 flips its display per interlaced field in its vblank handler: each frame end shows the buffer it

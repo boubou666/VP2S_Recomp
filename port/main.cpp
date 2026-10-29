@@ -14,6 +14,7 @@
 #endif
 
 #include "raylib.h"
+#include "rlgl.h" // rlReadTexturePixels: screenshots of a frame presented on the GPU
 
 #include "runtime/gs/gs_cpu_backend.h"
 
@@ -60,6 +61,7 @@ namespace
         // Distinct presented frames (the game's own frame rate: VP2 redraws one display buffer, so no flips).
         uint64_t distinctFrames = 0;
         uint64_t lastFrameHash = 0;
+        uint32_t lastFrameTexture = 0; // the latched GPU texture (presentation on the GPU)
         std::vector<uint8_t> framePixels;
         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 #if defined(PS2X_ENABLE_DEBUG_UI)
@@ -136,7 +138,16 @@ namespace
         if (!runtime.gsForPresentation().copyLatchedHostPresentationFrame(pixels, width, height) ||
             pixels.size() < static_cast<size_t>(width) * height * 4u)
         {
-            return false;
+            // Presented on the GPU (the native back end hands the window a texture): read that texture back.
+            uint32_t texture = 0;
+            if (!runtime.gsForPresentation().latchedHostPresentationTexture(texture, width, height) || texture == 0u)
+                return false;
+            void *read = rlReadTexturePixels(texture, static_cast<int>(width), static_cast<int>(height),
+                                             PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+            if (!read)
+                return false;
+            pixels.assign(static_cast<uint8_t *>(read), static_cast<uint8_t *>(read) + static_cast<size_t>(width) * height * 4u);
+            MemFree(read);
         }
         Image image{};
         image.data = pixels.data();
@@ -161,7 +172,17 @@ namespace
         }
         uint32_t frameWidth = 0;
         uint32_t frameHeight = 0;
-        if (runtime.gsForPresentation().copyLatchedHostPresentationFrame(diag.framePixels, frameWidth, frameHeight) &&
+        // Presented on the GPU: a new latched texture is a new frame shown (the back end rotates its textures).
+        if (uint32_t texture = 0; runtime.gsForPresentation().latchedHostPresentationTexture(texture, frameWidth, frameHeight))
+        {
+            if (texture != diag.lastFrameTexture)
+            {
+                diag.lastFrameTexture = texture;
+                ++diag.distinctFrames;
+                runtime.noteGameFrame();
+            }
+        }
+        else if (runtime.gsForPresentation().copyLatchedHostPresentationFrame(diag.framePixels, frameWidth, frameHeight) &&
             diag.framePixels.size() >= 4u)
         {
             // FNV-1a over a sparse sample of pixels: enough to tell a redrawn frame from a repeated one.
