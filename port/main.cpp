@@ -195,6 +195,8 @@ namespace
         std::cout << "[vp2s-diag] frame " << diag.frame << " t=" << static_cast<int>(seconds) << "s vsync=" << vsyncs
                   << " (" << static_cast<int>(vsyncs / std::max(seconds, 1.0)) << "/s) flips="
                   << runtime.gsForPresentation().displayFlips() << " frames=" << diag.distinctFrames << " latches=" << runtime.gsForPresentation().queuedLatchesDone()
+                  << " paced=" << runtime.framePacer().frames() // the native loop's frame ends (VP2S_NATIVE=1)
+                  << " host=" << g_hostFrames.load(std::memory_order_relaxed) // the window's own frames
                   << std::hex << ": pc=0x" << cpu.pc
                   << " ra=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[31]))
                   << " sp=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(cpu.r[29])) << std::dec;

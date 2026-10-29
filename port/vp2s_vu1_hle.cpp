@@ -280,7 +280,7 @@ namespace
         {
             // Lighting table A (mem[14].w != 0), then B (mem[14].y) and C (mem[14].z) when set. A's modes 1-3 are
             // table D's code; its mode 0 (0x31c0) gives every vertex mem[13] as it is (no mem[14].x test).
-            if (mem.i(14u, 1) != 0 || mem.i(14u, 2) != 0 || (mode != 0 && mode != 1))
+            if (mem.i(14u, 1) != 0 || mem.i(14u, 2) != 0 || (mode != 0 && mode != 1 && mode != 3))
             {
                 noteUnhandled("lighting mode/table (mem[14].w)", mode, mem.i(14u, 3) * 100 + mem.i(14u, 1) * 10 + mem.i(14u, 2));
                 return false;
@@ -346,6 +346,79 @@ namespace
                     factor[c] = colours[0][c] * dots[0] + colours[1][c] * dots[1] + colours[2][c] * dots[2] +
                                 colours[3][c] * dots[3] + ambient[c];
                 factor[3] = alpha;
+                apply(v, factor);
+            }
+            return true;
+        }
+        if (mode == 3)
+        {
+            // 0x2fd8: the four lights of mode 1 (directions by component of vf05..vf07, colours mem[5..8]) for the
+            // diffuse part, plus a specular part: per light, the normal against the light direction plus the unit
+            // vector from the vertex to vf08, squared header 9.w times. Header 12 weighs them: .x the ambient
+            // mem[19], .y the diffuse, .z the specular. Accumulated in the microprogram's order.
+            const Vec4 d[3] = {{state.vf[5][0], state.vf[5][1], state.vf[5][2], state.vf[5][3]},
+                               {state.vf[6][0], state.vf[6][1], state.vf[6][2], state.vf[6][3]},
+                               {state.vf[7][0], state.vf[7][1], state.vf[7][2], state.vf[7][3]}};
+            const Vec4 eyePoint = {state.vf[8][0], state.vf[8][1], state.vf[8][2], state.vf[8][3]};
+            const Vec4 colours[4] = {mem.vf(5u), mem.vf(6u), mem.vf(7u), mem.vf(8u)};
+            const Vec4 ambient = mem.vf(19u);
+            const Vec4 weights = mem.vf(top + 12u);
+            const int32_t power = mem.i(top + 9u, 3);
+            const float alpha = mem.f(13u, 3);
+            // VP2S_MODE3_VARIANT (diagnosis, to match the microprogram): 1 one more squaring, 2 one fewer, 3 specular
+            // clamped at 0, 4 the previous vertex's position, 5 diffuse not clamped.
+            static const int s_variant = [] { const char *v = std::getenv("VP2S_MODE3_VARIANT"); return v ? std::atoi(v) : 0; }();
+            const int32_t squarings = s_variant == 1 ? power + 1 : s_variant == 2 ? std::max(power - 1, 0) : power;
+            for (int32_t k = 0; k < count; ++k)
+            {
+                const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
+                const Vec4 n = mem.vf(v);
+                const Vec4 p = mem.vf((s_variant == 4 && k > 0 ? v - 4u : v) + 3u);
+                Vec4 eye{};
+                for (int c = 0; c < 3; ++c)
+                    eye[c] = (eyePoint[c] - p[c]) * weights[2];
+                const float length = std::sqrt((eyePoint[0] - p[0]) * (eyePoint[0] - p[0]) + (eyePoint[1] - p[1]) * (eyePoint[1] - p[1]) +
+                                               (eyePoint[2] - p[2]) * (eyePoint[2] - p[2]));
+                const float inverse = length != 0.0f ? 1.0f / length : 0.0f;
+                float diffuse[4], specular[4];
+                for (int i = 0; i < 4; ++i)
+                {
+                    diffuse[i] = (d[0][i] * weights[1]) * n[0] + (d[1][i] * weights[1]) * n[1] + (d[2][i] * weights[1]) * n[2];
+                    if (s_variant != 5)
+                        diffuse[i] = std::max(0.0f, diffuse[i]);
+                    float s = (d[0][i] * weights[2] + eye[0] * inverse) * n[0] + (d[1][i] * weights[2] + eye[1] * inverse) * n[1] +
+                              (d[2][i] * weights[2] + eye[2] * inverse) * n[2];
+                    if (s_variant == 3)
+                        s = std::max(0.0f, s);
+                    for (int32_t r = 0; r < squarings; ++r)
+                        s *= s;
+                    specular[i] = s;
+                }
+                Vec4 factor{};
+                for (int c = 0; c < 3; ++c)
+                {
+                    float acc = ambient[c] * weights[0];
+                    acc += colours[0][c] * diffuse[0];
+                    acc += colours[1][c] * diffuse[1];
+                    acc += colours[2][c] * diffuse[2];
+                    acc += colours[3][c] * diffuse[3];
+                    acc += colours[0][c] * specular[0];
+                    acc += colours[3][c] * specular[3];
+                    acc += colours[1][c] * specular[1];
+                    factor[c] = acc + colours[2][c] * specular[2];
+                }
+                factor[3] = alpha;
+                static const bool s_mode3Log = std::getenv("VP2S_MODE3_LOG") != nullptr;
+                static int s_mode3Logged = 0;
+                if (s_mode3Log && s_mode3Logged < 40)
+                {
+                    ++s_mode3Logged;
+                    std::printf("mode3 k=%d colour=%d,%d,%d weights=%g,%g,%g power=%d ambient=%g,%g,%g diffuse=%g,%g,%g,%g "
+                                "specular=%g,%g,%g,%g factor=%g,%g,%g\n",
+                                k, mem.i(v + 2u, 0), mem.i(v + 2u, 1), mem.i(v + 2u, 2), weights[0], weights[1], weights[2], power,
+                                ambient[0], ambient[1], ambient[2], diffuse[0], diffuse[1], diffuse[2], diffuse[3], specular[0],
+                                specular[1], specular[2], specular[3], factor[0], factor[1], factor[2]);
+                }
                 apply(v, factor);
             }
             return true;

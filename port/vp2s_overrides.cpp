@@ -321,6 +321,9 @@ namespace
         if (const char *native = std::getenv("VP2S_NATIVE"); native && native[0] == '1')
         {
             runtime.eeScheduler().setNativeFrames(true);
+            // VP2 flips its display per interlaced field in its vblank handler: each frame end shows the buffer it
+            // just finished instead.
+            runtime.gsForPresentation().setPresentNewestDisplayBuffer(true);
             runtime.replaceFunction(kFrameWait, &nativeFrameEnd);
             runtime.replaceFunction(kElapsedVBlanks, &nativeElapsed);
             std::cout << "[vp2s] native loop: frames paced by the host (cap " << runtime.framePacer().cap()

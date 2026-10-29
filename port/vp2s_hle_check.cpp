@@ -126,8 +126,42 @@ int main(int argc, char **argv)
                     ++badSt;
                     break;
                 }
-            if (std::memcmp(g.rgba, w.rgba, 16u) != 0)
-                ++badRgba;
+            if (std::memcmp(g.rgba, w.rgba, 16u) != 0 && badRgba++ < 12u)
+            {
+                // The run's lighting: header 8.y (mode) at TOP, mem[14] (tables).
+                const auto word = [&](uint32_t qw, uint32_t lane) {
+                    int32_t value;
+                    std::memcpy(&value, record.dataBefore.data() + ((qw % 1024u) * 16u + lane * 4u), 4u);
+                    return value;
+                };
+                const uint32_t top = record.top % 1024u;
+                std::printf("rgba: run %zu vertex %zu mode %d mem14 %d,%d,%d,%d got %u,%u,%u,%u want %u,%u,%u,%u\n", runs, i,
+                            word(top + 8u, 1), word(14u, 0), word(14u, 1), word(14u, 2), word(14u, 3), g.rgba[0], g.rgba[1],
+                            g.rgba[2], g.rgba[3], w.rgba[0], w.rgba[1], w.rgba[2], w.rgba[3]);
+                // The microprogram's lighting factors (its table at 0x380, after the run) and its inputs.
+                const auto after = [&](uint32_t qw, uint32_t lane) {
+                    float value;
+                    std::memcpy(&value, record.dataAfter.data() + ((qw % 1024u) * 16u + lane * 4u), 4u);
+                    return value;
+                };
+                const auto before = [&](uint32_t qw, uint32_t lane) {
+                    float value;
+                    std::memcpy(&value, record.dataBefore.data() + ((qw % 1024u) * 16u + lane * 4u), 4u);
+                    return value;
+                };
+                if (badRgba == 1u)
+                {
+                    for (uint32_t q = 0x380u; q < 0x380u + 16u; ++q)
+                        std::printf("  table[%#x] = %g %g %g %g\n", q, after(q, 0), after(q, 1), after(q, 2), after(q, 3));
+                    for (uint32_t q = 5u; q <= 8u; ++q)
+                        std::printf("  mem[%u] = %g %g %g %g\n", q, before(q, 0), before(q, 1), before(q, 2), before(q, 3));
+                    for (int r = 5; r <= 8; ++r)
+                        std::printf("  vf%02d = %g %g %g %g\n", r, record.stateBefore.vf[r][0], record.stateBefore.vf[r][1],
+                                    record.stateBefore.vf[r][2], record.stateBefore.vf[r][3]);
+                    std::printf("  header 9 = %d %d %d %d, 12 = %g %g %g %g\n", word(top + 9u, 0), word(top + 9u, 1), word(top + 9u, 2),
+                                word(top + 9u, 3), before(top + 12u, 0), before(top + 12u, 1), before(top + 12u, 2), before(top + 12u, 3));
+                }
+            }
             const auto near16 = [](uint32_t a, uint32_t b) { return std::abs(static_cast<int>((a - b) & 0xFFFFu) << 16 >> 16) <= 1; };
             if (!near16(g.xyz[0], w.xyz[0]) || !near16(g.xyz[1], w.xyz[1]))
                 ++badXyz;
