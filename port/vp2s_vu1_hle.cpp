@@ -383,7 +383,10 @@ namespace
                 float diffuse[4], specular[4];
                 for (int i = 0; i < 4; ++i)
                 {
-                    diffuse[i] = (d[0][i] * weights[1]) * n[0] + (d[1][i] * weights[1]) * n[1] + (d[2][i] * weights[1]) * n[2];
+                    // The fourth light (.w) is a plain diffuse one: not weighed by header 12.y, no specular (the
+                    // microprogram's factors, read back from its table at 0x380, say so).
+                    const float weight = i == 3 ? 1.0f : weights[1];
+                    diffuse[i] = (d[0][i] * weight) * n[0] + (d[1][i] * weight) * n[1] + (d[2][i] * weight) * n[2];
                     if (s_variant != 5)
                         diffuse[i] = std::max(0.0f, diffuse[i]);
                     float s = (d[0][i] * weights[2] + eye[0] * inverse) * n[0] + (d[1][i] * weights[2] + eye[1] * inverse) * n[1] +
@@ -392,7 +395,7 @@ namespace
                         s = std::max(0.0f, s);
                     for (int32_t r = 0; r < squarings; ++r)
                         s *= s;
-                    specular[i] = s;
+                    specular[i] = i == 3 ? 0.0f : s;
                 }
                 Vec4 factor{};
                 for (int c = 0; c < 3; ++c)
