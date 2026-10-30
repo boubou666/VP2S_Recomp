@@ -3,7 +3,7 @@
 # VP2S_Recomp
 
 **A native Windows port of *Valkyrie Profile 2: Silmeria* (PAL, `SLES-54645`), made by statically recompiling the game's PlayStation 2 code to C++.**<br>
-Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on a reimplementation of the PS2 hardware.
+The game's own MIPS R5900 code, rebuilt as a Windows program. Goal: no PS2 emulation at all (see below); parts of the PS2 hardware are still emulated today and are being replaced.
 
 ![Platform](https://img.shields.io/badge/platform-Windows-1b8cff)
 ![Compiler](https://img.shields.io/badge/compiler-MSVC-1b8cff)
@@ -21,6 +21,29 @@ Not an emulator: the game's own MIPS R5900 code, rebuilt as a Windows program on
 > | `SLES_546.45` | `541fa8d563b2834350fd0a635a4d3631574ad778` |
 >
 > `tools/extract.py` records the hash it finds in `build/extract/manifest.json` (`boot_sha1`).
+
+## Goal: no PS2 emulation at all
+
+> [!IMPORTANT]
+> **The end state of this port has zero PS2 emulation, not even small pieces.** Only the game's own code runs: the
+> recompiled EE code, its VU microprograms lifted to C++, its recompiled IOP modules. Everything that code produces
+> goes to native PC paths: a native renderer with its own render targets and textures, a native audio mixer, and time
+> from the host clock (real frame time, no vblank pacing). No VU microcode semantics, no VIF/DMA/GIF packets, no GS
+> front end or GS memory model (VRAM, swizzling, CLUTs, texture buffer), no SPU2 emulation.
+>
+> Work that fixes or tunes an emulated component is not done: the component is replaced natively instead, and its
+> visual bugs (for example Alicia's field shadow, drawn through the GS stencil trick) are fixed by that replacement.
+
+What is still emulated today, and the order it is removed in (branch `vp2s/native` of the PS2Recomp fork):
+
+| # | Emulated today | Native replacement |
+|---|---|---|
+| 1 | VU1 microprograms (compiled ahead of time, but keeping microcode flags and pipeline timing) | each program lifted to C++ (`tools/vu1_lift.py`) and drawn as native batches from the game's data (meshes, matrices, lights), no GIF packets |
+| 2 | GS front end and GPU back end (PS2 VRAM, swizzling, CLUTs, texture buffer, display buffer copies) | the native renderer with its own targets and textures |
+| 3 | VIF/DMA unpacking | direct reads of the game's packet data |
+| 4 | VU0 macro and micro mode (`vcallms`) | C++ math |
+| 5 | SPU2 | native audio mixer on the host clock |
+| 6 | vblank and interrupt pacing | host-paced frames, real frame time |
 
 ## Status
 
