@@ -234,39 +234,47 @@ def find_entry_points(images: dict[str, Image], csvs: dict[str, Path]) -> dict[s
                 if i < len(starts) and starts[i] <= high:
                     result[name].add(target)
 
-    # A switch's jump table (consecutive words pointing into the image's code, outside the code) whose
-    # targets cross a function start: Ghidra cut the switch's function short, and a jr to a case past
-    # the cut lands in the middle of another function, with no entry (VP2's mod003 at 0x4438b8 jumps to
-    # 0x4439d0 inside 0x4439b8 after a save is loaded, and the game hung there). Those cases get entries.
-    for name, image in images.items():
-        starts = sorted(known.get(name, set()) | result[name])
-        if not starts:
-            continue
-        run: list[int] = []
-        for addr in range(image.load, image.load + len(image.bytes) - 3, 4):
-            w = image.word(addr)
-            if w is not None and not w & 3 and image.in_code(w) and not image.in_code(addr):
-                run.append(w)
+    # The two passes below feed each other (a routine found through a jal can cut a switch's function, and a
+    # case entry can call routines Ghidra missed): repeat them until neither finds anything new (VP2's mod028
+    # froze a battle on a jr to 0x383968, cut off by 0x383940 that the jal pass found after the table pass).
+    while True:
+        before = sum(len(targets) for targets in result.values())
+        # A switch's jump table (consecutive words pointing into the image's code, outside the code) whose
+        # targets cross a function start: Ghidra cut the switch's function short, and a jr to a case past
+        # the cut lands in the middle of another function, with no entry (VP2's mod003 at 0x4438b8 jumps to
+        # 0x4439d0 inside 0x4439b8 after a save is loaded, and the game hung there). Those cases get entries.
+        for name, image in images.items():
+            starts = sorted(known.get(name, set()) | result[name])
+            if not starts:
                 continue
-            if len(run) >= 2 and max(run) - min(run) <= 0x1000:
-                containing = lambda t: starts[bisect.bisect_right(starts, t) - 1] if bisect.bisect_right(starts, t) else None
-                first = containing(min(run))
-                for target in run:
-                    if (containing(target) != first and target not in known.get(name, set())
-                            and target not in result[name]):
-                        result[name].add(target)
-            run = []
+            run: list[int] = []
+            for addr in range(image.load, image.load + len(image.bytes) - 3, 4):
+                w = image.word(addr)
+                if w is not None and not w & 3 and image.in_code(w) and not image.in_code(addr):
+                    run.append(w)
+                    continue
+                if len(run) >= 2 and max(run) - min(run) <= 0x1000:
+                    containing = lambda t: starts[bisect.bisect_right(starts, t) - 1] if bisect.bisect_right(starts, t) else None
+                    first = containing(min(run))
+                    for target in run:
+                        if (containing(target) != first and target not in known.get(name, set())
+                                and target not in result[name]):
+                            result[name].add(target)
+                run = []
 
-    # Routines Ghidra missed call others it missed too: follow the jal of every new entry, up
-    # to its first jr ra, until no new target appears.
-    pending = [(name, target) for name, targets in result.items() for target in targets]
-    while pending:
-        name, start = pending.pop()
-        image = images[name]
-        for target in image.calls_from(start):
-            for owner, candidate in images.items():
-                in_owner = candidate.in_section(target) and (owner == name or candidate.load != image.load)
-                if in_owner and target not in known.get(owner, set()) and target not in result[owner]:
-                    result[owner].add(target)
-                    pending.append((owner, target))
+        # Routines Ghidra missed call others it missed too: follow the jal of every new entry, up
+        # to its first jr ra, until no new target appears.
+        pending = [(name, target) for name, targets in result.items() for target in targets]
+        while pending:
+            name, start = pending.pop()
+            image = images[name]
+            for target in image.calls_from(start):
+                for owner, candidate in images.items():
+                    in_owner = candidate.in_section(target) and (owner == name or candidate.load != image.load)
+                    if in_owner and target not in known.get(owner, set()) and target not in result[owner]:
+                        result[owner].add(target)
+                        pending.append((owner, target))
+        if sum(len(targets) for targets in result.values()) == before:
+            break
+
     return {name: sorted(targets) for name, targets in result.items()}
