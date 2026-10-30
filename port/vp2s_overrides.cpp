@@ -318,6 +318,9 @@ namespace
             std::cout << "[vp2s] VU1 mesh program done natively" << std::endl;
         }
 
+        // VP2 draws its picture at 640x448 and copies every other line of it into a 640x256 buffer per interlaced
+        // field: the window shows the 640x448 picture, without the half-line bob from one field to the next.
+        runtime.gsForPresentation().setPresentProgressiveSource(true);
         // The native loop is the default (frames paced by the host, real-time step, no vblank in VP2's pacing):
         // VP2S_NATIVE=0 goes back to the PAL vblank pacing.
         if (const char *native = std::getenv("VP2S_NATIVE"); !native || native[0] != '0')
