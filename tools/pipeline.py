@@ -60,6 +60,9 @@ VU_AOT_DIR = BUILD / os.environ.get("VP2S_VU_AOT", "vu_aot")
 # VU1 microcode on its blocks' static schedule with relaxed floats (ps2_vu_aot, PS2X_VU_AOT_FAST): VU1 about 25%
 # faster, the same GS packets on recorded field runs. VP2S_VU_EXACT=1 keeps the exact pipeline model.
 VU_AOT_MODE = "exact" if os.environ.get("VP2S_VU_EXACT") else "fast"
+# Fragments kept exact in fast mode: the field lights (mod001 pc 0x6e0..) read Q before a DIV lands, across subroutine
+# calls, which the fast static schedule gets wrong (bands across the forest every 128 rows).
+VU_AOT_EXACT = "208b5f5ec34b392f"
 SDK_DIR = BUILD / "sdk"
 ENTRIES_DIR = BUILD / "entries"
 # Optional offline cache of CMake dependency sources (<name>-src directories, e.g. copied
@@ -385,7 +388,7 @@ def stage_vu(args) -> None:
     for name in input_names(args.inputs):
         out = VU_AOT_DIR / name
         stamp = VU_AOT_DIR / f".{name}.done"  # also for inputs without microcode
-        same_mode = stamp.exists() and stamp.read_text().startswith(f"mode={VU_AOT_MODE}\n")
+        same_mode = stamp.exists() and stamp.read_text().startswith(f"mode={VU_AOT_MODE} exact={VU_AOT_EXACT}\n")
         if same_mode and not stale([stamp], [ELF_DIR / f"{name}.elf", VU_AOT_TOOL], args.force):
             continue
         staging = VU_AOT_DIR / f".{name}-staging"
@@ -394,6 +397,7 @@ def stage_vu(args) -> None:
         env = {key: value for key, value in os.environ.items() if key != "PS2X_VU_AOT_FAST"}
         if VU_AOT_MODE == "fast":
             env["PS2X_VU_AOT_FAST"] = "1"
+            env["PS2X_VU_AOT_EXACT"] = VU_AOT_EXACT
         result = subprocess.run([str(VU_AOT_TOOL), str(ELF_DIR / f"{name}.elf"), str(staging), f"{name}_"],
                                 capture_output=True, text=True, env=env)
         if result.returncode != 0:
@@ -404,7 +408,7 @@ def stage_vu(args) -> None:
         else:
             shutil.rmtree(out, ignore_errors=True)
         shutil.rmtree(staging, ignore_errors=True)
-        stamp.write_text(f"mode={VU_AOT_MODE}\n" + result.stdout.strip() + "\n")
+        stamp.write_text(f"mode={VU_AOT_MODE} exact={VU_AOT_EXACT}\n" + result.stdout.strip() + "\n")
 
 
 def sync_generated(source: Path, target: Path) -> tuple[int, dict]:
