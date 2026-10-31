@@ -9,8 +9,10 @@ RGBA files this writes, by the key the game passes its texture cache (file tag, 
 
   tools/vp2_textures.py [--assets build/extract/assets] [--index build/vp2_texture_index.json] [--out build/vp2_textures]
 
-Output (game data: build tree only, never committed): <out>/<tag>_<index>.rgba (hexadecimal) = u32 width, u32 height, then
-width * height RGBA8, named <tag in hex>_<index in hex> (alpha: the GS's 0x80 = opaque doubled, clamped to 255).
+Output (game data: build tree only, never committed): <out>/<tag>_<index>.tex (hexadecimal) = u32 width, u32 height,
+u32 psm, then width * height texels (one palette index each for T4 / T8, RGBA8 for CT32), then 256 RGBA8 palette
+entries in index order (CSM1 resolved; a 4-bit texture uses entry 16 * CSA + index; zero when the palette is sent
+elsewhere). Alpha: the GS's 0x80 = opaque doubled, clamped to 255.
 """
 import argparse
 import json
@@ -69,62 +71,54 @@ def transfers(data, at, span):
     return found
 
 
+def palette_table(data, at):
+    """The 256 colours a palette picture (a 16 x 16, 16 x 2 or 8 x 2 CT32 upload) gives indices 0..255 in CSM1 order:
+    entry k at (x, y) = ((k & 7) | (k & 0x10) >> 1, (k >> 5) * 2 + (k >> 3 & 1)); a 4-bit texture uses
+    16 * CSA + its index."""
+    fmt, _, cw, ch, colours = block(data, at)
+    table = bytearray(1024)
+    for k in range(256):
+        x, y = (k & 7) | ((k & 0x10) >> 1), ((k >> 5) << 1) | ((k >> 3) & 1)
+        if x < cw and y < ch:
+            r, g, b, a = data[colours + 4 * (y * cw + x): colours + 4 * (y * cw + x) + 4]
+            table[4 * k: 4 * k + 4] = bytes((r, g, b, min(255, a * 2)))
+    return bytes(table)
+
+
 def convert(data, at):
+    """(width, height, psm, texels, palette table): texels one index a texel (T4 / T8) or RGBA8 (CT32)."""
     w, h, size, _, psm, tw, th, _ = struct.unpack_from('<HHIIHBBI', data, at)
     blocks = transfers(data, at, size * 2 + 0x2000)
     pixel_blocks = [b for b in blocks if b[3] * b[4] * BPP.get(b[1], 32) // 8 == size or (b[3], b[4]) == (w, h)]
-    palette_blocks = [b for b in blocks if b[1] == 0x00 and (b[3], b[4]) in ((16, 16), (8, 2))]
+    palette_blocks = [b for b in blocks if b[1] == 0x00 and (b[3], b[4]) in ((16, 16), (16, 2), (8, 2))]
     if not pixel_blocks:
         return None, 'no pixel block'
     _, pdpsm, pdbw, pw, ph, pixels = pixel_blocks[0]
-    palette_block = palette_blocks[0][0] - at if palette_blocks else None
-    if psm in (0x13, 0x14) and palette_block is None:
-        return None, 'no palette block'
-    if pdpsm == 0x00 and psm in (0x13, 0x14) and CONVERTER:
+    table = palette_table(data, palette_blocks[0][0]) if palette_blocks else bytes(1024)
+    if psm in (0x13, 0x14) and pdpsm == 0x00:
         # 4- or 8-bit texels kept as a CT32 image in the GS's memory order: laid out and read back by vp2s_texconv.
-        cdpsm, _, cw, chh, palette = block(data, at + palette_block)
-        if cdpsm != 0x00:
-            return None, f'palette 0x{cdpsm:x}'
-        count = 256 if psm == 0x13 else 16
-        pal = bytearray()
-        for i in range(256):
-            j = (csm1(i) if count == 256 else i) if i < count else 0
-            r, g, b, a = data[palette + 4 * j: palette + 4 * j + 4]
-            pal += bytes((r, g, b, min(255, a * 2)))
-        job = os.path.join(TEMP, 'block.bin')
+        if not CONVERTER or not os.path.exists(CONVERTER):
+            return None, 'no vp2s_texconv'
+        job, result = os.path.join(TEMP, 'block.bin'), os.path.join(TEMP, 'out.bin')
         with open(job, 'wb') as f:
-            f.write(struct.pack('<6I', psm, w, h, pw, ph, pdbw) + bytes(pal) + data[pixels: pixels + pw * ph * 4])
-        result = os.path.join(TEMP, 'out.rgba')
+            f.write(struct.pack('<6I', psm, w, h, pw, ph, pdbw) + data[pixels: pixels + pw * ph * 4])
         if subprocess.run([CONVERTER, job, result]).returncode != 0:
             return None, 'converter failed'
-        d = open(result, 'rb').read()
-        return (w, h, d[8:]), None
+        return (w, h, psm, open(result, 'rb').read(), table), None
     if pdpsm != psm:
         return None, f'stored as 0x{pdpsm:x}'
-    colours = None
-    if psm in (0x13, 0x14):
-        cdpsm, _, cw, chh, palette = block(data, at + palette_block)
-        if cdpsm != 0x00:
-            return None, f'palette 0x{cdpsm:x}'
-        count = 256 if psm == 0x13 else 16
-        colours = []
-        for i in range(count):
-            j = csm1(i) if count == 256 else i
-            r, g, b, a = data[palette + 4 * j: palette + 4 * j + 4]
-            colours.append(bytes((r, g, b, min(255, a * 2))))
-    out = bytearray()
+    texels = bytearray()
     for y in range(h):
         for x in range(w):
             k = y * pw + x
             if psm == 0x13:
-                out += colours[data[pixels + k]]
+                texels.append(data[pixels + k])
             elif psm == 0x14:
-                out += colours[(data[pixels + k // 2] >> (4 * (k & 1))) & 15]
+                texels.append((data[pixels + k // 2] >> (4 * (k & 1))) & 15)
             else:
                 r, g, b, a = data[pixels + 4 * k: pixels + 4 * k + 4]
-                out += bytes((r, g, b, min(255, a * 2)))
-    return (w, h, bytes(out)), None
-
+                texels += bytes((r, g, b, min(255, a * 2)))
+    return (w, h, psm, bytes(texels), table), None
 
 def scan(assets):
     """The texture headers in the extracted assets and the game's key for each: the info block before a header
@@ -176,10 +170,10 @@ def main():
         if image is None:
             results[why.split(' (')[0]] += 1
             continue
-        w, h, rgba = image
-        name = f"{entry['tag']:08x}_{entry['index']:x}.rgba"
+        w, h, psm, texels, table = image
+        name = f"{entry['tag']:08x}_{entry['index']:x}.tex"
         with open(os.path.join(a.out, name), 'wb') as f:
-            f.write(struct.pack('<II', w, h) + rgba)
+            f.write(struct.pack('<III', w, h, psm) + texels + table)
         results['converted'] += 1
     for k, v in results.most_common():
         print(f'{k}: {v}')
