@@ -4,6 +4,7 @@
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
 #include "vp2s_vu1_hle.h"
+#include "vp2s_textures.h"
 #include "ps2_overlay_modules.h"
 
 #include <algorithm>
@@ -354,6 +355,7 @@ namespace
         if (const char *hle = std::getenv("VP2S_VU1_HLE"); !hle || hle[0] != '0')
         {
             ps2x::native::setVu1Hle(&vp2sVu1Hle);
+            vp2sInstallGameTextures();
             std::cout << "[vp2s] VU1 mesh program done natively" << std::endl;
         }
 

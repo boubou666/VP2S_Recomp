@@ -66,6 +66,7 @@ add_library(vp2s_frontend OBJECT
     "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_overrides.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_vu1_hle.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_textures.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_iop.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_diag_gs.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_profile.cpp"
