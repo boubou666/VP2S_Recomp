@@ -958,6 +958,20 @@ namespace
         m.alphaBlend = (prim >> 6) & 1u; // ABE
         m.tex0 = r.tex0;
         m.blend = m.alphaBlend ? ps2x::native::blendFromAlpha(r.alpha) : ps2x::native::Material::Blend::Opaque;
+        if (m.alphaBlend)
+        {
+            // The named blends cover (Cs - Cd) As + Cd, Cs As + Cd, Cd - Cs As, Cd (1 - As), Cd (1 + As) and D alone;
+            // any other (A - B) C + D (VP2's light grids: Cd As + Cs) as the GS blend itself.
+            const uint32_t a = r.alpha & 3u, b = (r.alpha >> 2) & 3u, c = (r.alpha >> 4) & 3u, d = (r.alpha >> 6) & 3u;
+            const bool named = a == b || (c == 0u && d == 1u && ((a == 0u && (b == 1u || b == 2u)) || (a == 2u && (b == 0u || b == 1u)) ||
+                                                                 (a == 1u && b == 2u)));
+            if (!named)
+            {
+                m.blend = ps2x::native::Material::Blend::Gs;
+                m.gsAlpha = static_cast<uint8_t>(r.alpha & 0xFFu);
+                m.gsFix = static_cast<uint8_t>((r.alpha >> 32) & 0xFFu);
+            }
+        }
         const bool ate = r.test & 1u;
         const uint32_t atst = static_cast<uint32_t>((r.test >> 1) & 7u), aref = static_cast<uint32_t>((r.test >> 4) & 0xFFu);
         m.alphaTest = ate && (atst == 5u || atst == 6u); // GEQUAL / GREATER (VP2's meshes: GREATER 0)
@@ -1278,6 +1292,269 @@ namespace
     // A run no native handler takes: the program as C++ (vp2s_vu1_programs.h) when its image was lifted, in place of
     // VU1. VP2S_VU1_IMAGES=<dir>: the images that have none saved there (<image>.bin, and <image>.txt with the start
     // pcs run) for tools/vu1_native.py. VP2S_VU1_PROGRAMS=0: VU1 runs them all (to compare).
+    // A packet a program as C++ kicked, drawn by the native renderer: its triangles, strips, fans and sprites (PACKED,
+    // RGBAQ / ST / UV / XYZ2 / XYZF2 / XYZ3 / XYZF3 / PRIM / A+D) in the GS's window coordinates, with the material
+    // from the registers the game wrote in its packets (the texture cache's scan) and in this one. The packet's
+    // register writes still go to the GS as a packet of their own, for the draws not native yet. False (the caller
+    // kicks it whole): something else (points, lines, REGLIST / IMAGE, an unknown register), or VP2S_NATIVE_PROGRAMS=0.
+    bool drawPacketNatively(ps2x::native::Vu1HleRun &run, const std::vector<uint8_t> &packet)
+    {
+        static const bool s_on = [] { const char *v = std::getenv("VP2S_NATIVE_PROGRAMS"); return !(v && v[0] == '0'); }();
+        if (!s_on || !run.nativeDraw || !vp2sNativeMeshEnabled())
+            return false;
+        // VP2S_NATIVE_PROGRAMS_PCS=<pc>,<pc>... (diagnosis): only those programs' packets.
+        static const std::vector<uint32_t> s_pcs = [] {
+            std::vector<uint32_t> pcs;
+            if (const char *v = std::getenv("VP2S_NATIVE_PROGRAMS_PCS"))
+                for (const char *p = v; *p;)
+                {
+                    char *end = nullptr;
+                    pcs.push_back(static_cast<uint32_t>(std::strtoul(p, &end, 16)));
+                    p = *end ? end + 1 : end;
+                }
+            return pcs;
+        }();
+        if (!s_pcs.empty() && std::find(s_pcs.begin(), s_pcs.end(), run.startPc) == s_pcs.end())
+            return false;
+        // 0x06e0's 2D (the HUD and minimap pieces, drawn under its own SCISSOR / FRAME changes) washes the battle
+        // out white natively: its packets go on as before until that is understood (VP2S_NATIVE_PROGRAMS_PCS lists it
+        // to try).
+        if (s_pcs.empty() && run.startPc == 0x06e0u)
+            return false;
+        auto &cache = ps2x::native::textures();
+        DrawRegisters regs[2];
+        for (uint32_t c = 0; c < 2u; ++c)
+        {
+            regs[c].tex0 = cache.gameRegister(0x06u + c);
+            regs[c].clamp = cache.gameRegister(0x08u + c);
+            regs[c].alpha = cache.gameRegister(0x42u + c);
+            regs[c].test = cache.gameRegister(0x47u + c);
+            regs[c].fba = cache.gameRegister(0x4Au + c);
+            regs[c].zbuf = cache.gameRegister(0x4Eu + c);
+        }
+        uint64_t prim = cache.gameRegister(0x00u);
+        const uint64_t prmodecont = cache.gameRegister(0x1Au);
+        if ((prmodecont & 1u) == 0u)
+            return false; // PRMODE supplies the attributes: not seen in VP2's programs
+        struct Batch
+        {
+            ps2x::native::Material material;
+            std::vector<ps2x::native::Vertex> triangles;
+            uint32_t context = 0;
+            uint64_t key = 0; // what the material was made of
+        };
+        thread_local std::vector<Batch> batches;
+        batches.clear();
+        thread_local std::vector<uint8_t> registerWrites;
+        registerWrites.clear();
+        const auto u32 = [&](size_t at) { uint32_t v; std::memcpy(&v, packet.data() + at, 4u); return v; };
+        const auto u64 = [&](size_t at) { uint64_t v; std::memcpy(&v, packet.data() + at, 8u); return v; };
+        const auto f32 = [&](size_t at) { float v; std::memcpy(&v, packet.data() + at, 4u); return v; };
+
+        ps2x::native::Vertex queue[3], centre;
+        uint32_t queued = 0, kicks = 0;
+        uint32_t rgba = 0x80808080u;
+        float s = 0.0f, t = 0.0f, q = 1.0f;
+        uint32_t uvU = 0, uvV = 0;
+        bool haveUv = false;
+        const auto texSize = [&](uint64_t tex0, uint32_t shift) {
+            return static_cast<float>(1u << std::min<uint32_t>(10u, static_cast<uint32_t>((tex0 >> shift) & 0xFu)));
+        };
+        const auto startPrim = [&]() { queued = 0; kicks = 0; };
+        const auto batchFor = [&](uint64_t p) -> Batch & {
+            const uint32_t ctxt = static_cast<uint32_t>((p >> 9) & 1u);
+            DrawRegisters &saved = g_drawRegisters[ctxt];
+            const DrawRegisters old = saved;
+            saved = regs[ctxt];
+            const DrawRegisters &r = regs[ctxt];
+            const uint64_t key = fnv(reinterpret_cast<const uint8_t *>(&r), sizeof(r)) ^ ((p & 0x7F8u) * 0x9E3779B97F4A7C15ull) ^ ctxt;
+            if (!batches.empty() && batches.back().key == key)
+            {
+                saved = old;
+                return batches.back();
+            }
+            ps2x::native::Material m = nativeMaterial(static_cast<uint32_t>(p));
+            saved = old;
+            batches.push_back({m, {}, ctxt, key});
+            return batches.back();
+        };
+        const auto vertex = [&](uint32_t x, uint32_t y, uint32_t z, uint32_t fog, bool drawing) {
+            ps2x::native::Vertex v;
+            v.x = static_cast<float>(x & 0xFFFFu) / 16.0f;
+            v.y = static_cast<float>(y & 0xFFFFu) / 16.0f;
+            v.z = static_cast<float>(z); // the GS's Z, as the native meshes give it
+            v.rgba = rgba;
+            v.fog = static_cast<float>(fog) / 255.0f;
+            const bool fst = (prim >> 8) & 1u;
+            const uint64_t tex0 = regs[(prim >> 9) & 1u].tex0;
+            if (fst && haveUv)
+            {
+                v.u = static_cast<float>(uvU) / 16.0f / texSize(tex0, 26);
+                v.v = static_cast<float>(uvV) / 16.0f / texSize(tex0, 30);
+            }
+            else
+            {
+                v.u = q != 0.0f ? s / q : s;
+                v.v = q != 0.0f ? t / q : t;
+            }
+            const uint32_t type = static_cast<uint32_t>(prim & 7u);
+            const bool flat = ((prim >> 3) & 1u) == 0u; // IIP 0: the last vertex's colour
+            if (type == 6u) // sprite: two corners
+            {
+                queue[queued++ % 2u] = v;
+                if (queued >= 2u && drawing)
+                {
+                    const ps2x::native::Vertex &a = queue[(queued - 2u) % 2u], &b = queue[(queued - 1u) % 2u];
+                    ps2x::native::Vertex c00 = b, c10 = b, c01 = b, c11 = b;
+                    c00.x = a.x, c00.y = a.y, c00.u = a.u, c00.v = a.v;
+                    c10.y = a.y, c10.v = a.v;
+                    c01.x = a.x, c01.u = a.u;
+                    Batch &batch = batchFor(prim);
+                    batch.triangles.insert(batch.triangles.end(), {c00, c10, c01, c10, c11, c01});
+                    queued = 0;
+                }
+                else if (queued >= 2u)
+                    queued = 0;
+                return;
+            }
+            queue[0] = queue[1];
+            queue[1] = queue[2];
+            queue[2] = v;
+            ++kicks;
+            const bool fan = type == 5u;
+            if (fan && kicks == 1u)
+                centre = v; // the fan's first vertex stays
+
+            if (type == 3u && kicks % 3u != 0u)
+                return; // a triangle list draws every third vertex
+            if (kicks < 3u || !drawing)
+                return;
+            ps2x::native::Vertex tri[3] = {fan ? centre : queue[0], queue[1], queue[2]};
+            if (flat)
+                tri[0].rgba = tri[1].rgba = tri[2].rgba;
+            Batch &batch = batchFor(prim);
+            batch.triangles.insert(batch.triangles.end(), tri, tri + 3);
+        };
+
+        size_t at = 0;
+        while (at + 16u <= packet.size())
+        {
+            const uint64_t tag = u64(at), regList = u64(at + 8u);
+            at += 16u;
+            const uint32_t nloop = static_cast<uint32_t>(tag & 0x7FFFu), flg = static_cast<uint32_t>((tag >> 58) & 3u);
+            const uint32_t nreg = ((tag >> 60) & 15u) == 0u ? 16u : static_cast<uint32_t>((tag >> 60) & 15u);
+            if (flg != 0u)
+                return false;
+            if ((tag >> 46) & 1u) // PRE
+            {
+                prim = (tag >> 47) & 0x7FFu;
+                startPrim();
+            }
+            for (uint32_t n = 0; n < nloop; ++n)
+                for (uint32_t r = 0; r < nreg; ++r, at += 16u)
+                {
+                    if (at + 16u > packet.size())
+                        return false;
+                    switch ((regList >> (4u * r)) & 15u)
+                    {
+                    case 0x0: prim = u64(at) & 0x7FFu; startPrim(); break;
+                    case 0x1: rgba = (u32(at) & 0xFFu) | ((u32(at + 4u) & 0xFFu) << 8) | ((u32(at + 8u) & 0xFFu) << 16) |
+                                     ((u32(at + 12u) & 0xFFu) << 24); break;
+                    case 0x2: s = f32(at), t = f32(at + 4u), q = f32(at + 8u); break;
+                    case 0x3: uvU = u32(at) & 0x3FFFu, uvV = u32(at + 4u) & 0x3FFFu, haveUv = true; break;
+                    case 0x4: vertex(u32(at), u32(at + 4u), (u32(at + 8u) >> 4) & 0xFFFFFFu, (u32(at + 12u) >> 4) & 0xFFu,
+                                     ((u32(at + 12u) >> 15) & 1u) == 0u); break;
+                    case 0x5: vertex(u32(at), u32(at + 4u), u32(at + 8u), 255u, ((u32(at + 12u) >> 15) & 1u) == 0u); break;
+                    case 0xC: vertex(u32(at), u32(at + 4u), (u32(at + 8u) >> 4) & 0xFFFFFFu, (u32(at + 12u) >> 4) & 0xFFu, false); break;
+                    case 0xD: vertex(u32(at), u32(at + 4u), u32(at + 8u), 255u, false); break;
+                    case 0xF: break; // NOP
+                    case 0xE:
+                    {
+                        const uint64_t data = u64(at);
+                        const uint32_t address = static_cast<uint32_t>(u64(at + 8u) & 0xFFu);
+                        switch (address)
+                        {
+                        case 0x00: prim = data & 0x7FFu; startPrim(); break;
+                        case 0x06: case 0x07: regs[address - 0x06u].tex0 = data; break;
+                        case 0x08: case 0x09: regs[address - 0x08u].clamp = data; break;
+                        case 0x42: case 0x43: regs[address - 0x42u].alpha = data; break;
+                        case 0x47: case 0x48: regs[address - 0x47u].test = data; break;
+                        case 0x4A: case 0x4B: regs[address - 0x4Au].fba = data; break;
+                        case 0x4E: case 0x4F: regs[address - 0x4Eu].zbuf = data; break;
+                        case 0x14: case 0x15: case 0x3B: case 0x3D: case 0x3F: case 0x1A: case 0x18: case 0x19:
+                        case 0x40: case 0x41: case 0x4C: case 0x4D: case 0x44: case 0x45: case 0x46: case 0x49:
+                            break; // passed on to the GS below; TEX1 / TEXA / FOGCOL / TEXFLUSH / PRMODECONT / XYOFFSET /
+                                   // SCISSOR / FRAME / DIMX / DTHE / COLCLAMP / PABE as the GS keeps them
+                        default:
+                            return false;
+                        }
+                        if (address == 0x1Au && (data & 1u) == 0u)
+                            return false;
+                        registerWrites.insert(registerWrites.end(), packet.begin() + static_cast<std::ptrdiff_t>(at),
+                                              packet.begin() + static_cast<std::ptrdiff_t>(at + 16u));
+                        break;
+                    }
+                    default:
+                        return false;
+                    }
+                    const uint32_t type = static_cast<uint32_t>(prim & 7u);
+                    if (type < 3u || type == 7u)
+                        return false; // points, lines
+                }
+            if ((tag >> 15) & 1u)
+                break;
+        }
+
+        // The register writes for the GS (its other draws), then the triangles where the packet would have gone.
+        if (!registerWrites.empty())
+        {
+            thread_local std::vector<uint8_t> writes;
+            const uint64_t adTag = (registerWrites.size() / 16u) | (uint64_t{1} << 15) | (uint64_t{1} << 60);
+            const uint64_t adRegs = 0xEu;
+            writes.resize(16u + registerWrites.size());
+            std::memcpy(writes.data(), &adTag, 8u);
+            std::memcpy(writes.data() + 8u, &adRegs, 8u);
+            std::memcpy(writes.data() + 16u, registerWrites.data(), registerWrites.size());
+            run.kick(run.user, writes.data(), static_cast<uint32_t>(writes.size()));
+        }
+        // A texture no upload of the game makes (the frame itself, sampled by the full-screen effects): not native yet.
+        for (const Batch &batch : batches)
+            if (batch.material.textured && !batch.triangles.empty() && !cache.texture(batch.material.tex0, batch.material.texa))
+                return false;
+        // VP2S_NATIVE_PROGRAMS_LOG=<n>: each distinct (program, texture, blend, context) drawn this way, once, up to n.
+        static int s_logLeft = [] { const char *v = std::getenv("VP2S_NATIVE_PROGRAMS_LOG"); return v ? std::atoi(v) : 0; }();
+        static std::unordered_map<uint64_t, bool> s_logged;
+        for (const Batch &batch : batches)
+            if (s_logLeft > 0 && !batch.triangles.empty() &&
+                s_logged.emplace(batch.material.tex0 * 31u ^ regs[batch.context].alpha * 7u ^ (uint64_t{run.startPc} << 48) ^ batch.context, true).second)
+            {
+                --s_logLeft;
+                const ps2x::native::Vertex &v0 = batch.triangles.front();
+                std::fprintf(stderr, "[vp2s-programs] pc %04x ctxt %u tex0 %016llx alpha %016llx test %llx blend %d textured %d tris %zu first (%.1f %.1f %.0f) rgba %08x uv %.3f %.3f\n",
+                             run.startPc, batch.context, static_cast<unsigned long long>(batch.material.tex0),
+                             static_cast<unsigned long long>(regs[batch.context].alpha), static_cast<unsigned long long>(regs[batch.context].test),
+                             static_cast<int>(batch.material.blend), batch.material.textured ? 1 : 0, batch.triangles.size() / 3u, v0.x, v0.y,
+                             v0.z, v0.rgba, v0.u, v0.v);
+            }
+        static const float s_identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        for (const Batch &batch : batches)
+        {
+            if (batch.triangles.empty())
+                continue;
+            uint64_t group = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_nativeMutex);
+                ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
+                ensureNativeStarted();
+                group = ++g_nativeGroup;
+                renderer.beginGroup(group);
+                renderer.draw(batch.material, s_identity, batch.triangles.data(), static_cast<uint32_t>(batch.triangles.size()));
+            }
+            run.nativeDraw(run.nativeUser, group, static_cast<int>(batch.context));
+        }
+        return true;
+    }
+
     bool runLifted(ps2x::native::Vu1HleRun &run)
     {
         static const bool s_on = [] { const char *v = std::getenv("VP2S_VU1_PROGRAMS"); return !(v && v[0] == '0'); }();
@@ -1333,7 +1610,8 @@ namespace
             return false;
         }
         for (const std::vector<uint8_t> &packet : kicks)
-            run.kick(run.user, packet.data(), static_cast<uint32_t>(packet.size()));
+            if (!drawPacketNatively(run, packet))
+                run.kick(run.user, packet.data(), static_cast<uint32_t>(packet.size()));
         countHle(17);
         return true;
     }
