@@ -4,9 +4,11 @@
 // compares every drawn vertex with the packet the microprogram sent: ST (relative 1e-3), RGBA (exact), XYZ (1/16
 // pixel), fog, and ADC from a strip's third vertex. repeat > 1 also times the native build.
 #include "vp2s_vu1_hle.h"
+#include "vp2s_vu1_programs.h"
 #include "runtime/ps2_vu1_trace.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -91,6 +93,8 @@ int main(int argc, char **argv)
     std::map<int, size_t> rejections; // vp2sMeshRejection() of the runs not built natively
     std::map<std::pair<uint32_t, uint32_t>, std::pair<size_t, size_t>> images; // (code image, start): runs, built
     uint32_t image = 0;
+    std::map<std::pair<uint32_t, uint32_t>, size_t> all; // every program run, by image
+    std::map<std::pair<uint32_t, uint32_t>, std::array<size_t, 4>> lifted; // runs, packets differ, memory differs, stopped
     double seconds = 0.0;
     std::vector<uint8_t> packet;
     while (readVu1TraceRecord(in, record))
@@ -98,20 +102,99 @@ int main(int argc, char **argv)
         if (!record.code.empty())
         {
             code = record.code;
-            // FNV-1a 32 of the 16 KiB, as vp2s_vu1_hle.cpp's program log names images.
-            image = 2166136261u;
-            for (size_t i = 0; i < 16384u && i < code.size(); ++i)
-                image = (image ^ code[i]) * 16777619u;
+            image = vp2sVu1ImageHash(code.data()); // as the program log and the generated programs name images
         }
-        // VP2S_CHECK_EXTRACT=<image hex>:<start hex>:<dir>:<max>: the first runs of that program as files for offline
+        // VP2S_CHECK_IMAGES=<dir>: each image and the start pcs run from it, as a run with VP2S_VU1_IMAGES saves them
+        // (for tools/vu1_native.py).
+        static const char *s_images = std::getenv("VP2S_CHECK_IMAGES");
+        if (s_images && record.resume == 0u && all.find({image, record.startPC}) == all.end())
+        {
+            char path[600];
+            std::snprintf(path, sizeof(path), "%s/%08x.bin", s_images, image);
+            if (FILE *f = std::fopen(path, "wb"))
+            {
+                std::fwrite(code.data(), 1, code.size(), f);
+                std::fclose(f);
+            }
+            std::snprintf(path, sizeof(path), "%s/%08x.txt", s_images, image);
+            if (FILE *f = std::fopen(path, "a"))
+            {
+                std::fprintf(f, "%x\n", record.startPC);
+                std::fclose(f);
+            }
+        }
+        // A program as C++ (vp2s_vu1_programs.h): run on the recorded memory and registers, every packet it kicks and
+        // the memory it leaves compared byte for byte with VU1's.
+        if (record.resume == 0u)
+            if (const Vp2sVu1Program program = vp2sVu1Program(code.data(), record.startPC))
+            {
+                std::vector<uint8_t> data = record.dataBefore;
+                VU1State state = record.stateBefore;
+                std::vector<std::vector<uint8_t>> kicked;
+                const uint64_t cycles = program(record.startPC, state, data.data(), record.top,
+                                                [](void *user, const uint8_t *bytes, uint32_t size) {
+                                                    static_cast<std::vector<std::vector<uint8_t>> *>(user)->emplace_back(bytes, bytes + size);
+                                                },
+                                                &kicked);
+                auto &count = lifted[{image, record.startPC}];
+                ++count[0];
+                if (cycles == ~0ull)
+                    ++count[3];
+                else
+                {
+                    if (kicked != record.packets)
+                    {
+                        if (count[1]++ < 3u)
+                            for (size_t k = 0; k < kicked.size() && k < record.packets.size(); ++k)
+                            {
+                                const auto &g = kicked[k], &w = record.packets[k];
+                                size_t at = 0;
+                                while (at < g.size() && at < w.size() && g[at] == w[at])
+                                    ++at;
+                                if (at == g.size() && g.size() == w.size())
+                                    continue;
+                                uint32_t gv[4] = {}, wv[4] = {};
+                                const size_t q = at / 16u * 16u;
+                                if (q + 16u <= g.size())
+                                    std::memcpy(gv, g.data() + q, 16u);
+                                if (q + 16u <= w.size())
+                                    std::memcpy(wv, w.data() + q, 16u);
+                                std::printf("lifted %08x:%04x run %zu packet %zu (%zu / %zu bytes): byte %zu %08x %08x %08x %08x VU1 %08x %08x %08x %08x\n",
+                                            image, record.startPC, count[0], k, g.size(), w.size(), at, gv[0], gv[1], gv[2], gv[3],
+                                            wv[0], wv[1], wv[2], wv[3]);
+                                break;
+                            }
+                    }
+                    if (data != record.dataAfter && count[2]++ < 3u)
+                    {
+                        // The quadwords that differ (first few): where in memory, and the values.
+                        int shown = 0;
+                        for (size_t q = 0; q < data.size() / 16u && shown < 4; ++q)
+                            if (std::memcmp(data.data() + q * 16u, record.dataAfter.data() + q * 16u, 16u) != 0)
+                            {
+                                uint32_t g[4], w[4];
+                                std::memcpy(g, data.data() + q * 16u, 16u);
+                                std::memcpy(w, record.dataAfter.data() + q * 16u, 16u);
+                                std::printf("lifted %08x:%04x run %zu: mem[%zu] %08x %08x %08x %08x VU1 %08x %08x %08x %08x (top %u)\n",
+                                            image, record.startPC, count[0], q, g[0], g[1], g[2], g[3], w[0], w[1], w[2], w[3],
+                                            record.top);
+                                ++shown;
+                            }
+                    }
+                }
+                continue;
+            }
+        // VP2S_CHECK_EXTRACT=<image hex>:<start hex>:<max>:<dir>: the first runs of that program as files for offline
         // study: memory and registers before and after, and each packet it kicked.
         static const char *s_extract = std::getenv("VP2S_CHECK_EXTRACT");
+        if (record.resume == 0u)
+            ++all[{image, record.startPC}];
         if (s_extract)
         {
             static uint32_t s_image = 0, s_start = 0;
             static unsigned s_max = 0, s_done = 0;
             static char s_dir[512] = {};
-            static const bool s_parsed = std::sscanf(s_extract, "%x:%x:%511[^:]:%u", &s_image, &s_start, s_dir, &s_max) == 4;
+            static const bool s_parsed = std::sscanf(s_extract, "%x:%x:%u:%511[^\n]", &s_image, &s_start, &s_max, s_dir) == 4;
             if (s_parsed && image == s_image && record.startPC == s_start && record.resume == 0u && s_done < s_max)
             {
                 char path[600];
@@ -365,6 +448,12 @@ int main(int argc, char **argv)
     std::printf("mismatches: count=%zu st=%zu rgba=%zu xyz=%zu fog=%zu adc=%zu\n", badCount, badSt, badRgba, badXyz,
                 badFog, badAdc);
     std::printf("native build: %.3f ms total, %.2f us per run\n", seconds * 1000.0, runs ? seconds * 1e6 / runs : 0.0);
+    for (const auto &[key, c] : lifted)
+        std::printf("lifted %08x:%04x: %zu runs, packets differ %zu, memory differs %zu, stopped %zu\n", key.first, key.second,
+                    c[0], c[1], c[2], c[3]);
+    if (std::getenv("VP2S_CHECK_EXTRACT"))
+        for (const auto &[key, count] : all)
+            std::printf("all: image %08x program %04x: %zu runs\n", key.first, key.second, count);
     for (const auto &[key, count] : images)
         std::printf("image %08x program %04x: %zu runs, %zu built\n", key.first, key.second, count.first, count.second);
     for (const auto &[reason, count] : rejections)

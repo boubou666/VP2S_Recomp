@@ -1,4 +1,5 @@
 #include "vp2s_vu1_hle.h"
+#include "vp2s_vu1_programs.h"
 
 #include <algorithm>
 #include <array>
@@ -810,12 +811,8 @@ namespace
     std::mutex g_otherMutex;
     std::unordered_map<uint64_t, uint64_t> g_otherPrograms; // (code image hash << 32 | start), runs
 
-    void noteOtherProgram(uint32_t pc, const uint8_t *code)
+    void noteOtherProgram(uint32_t pc, uint32_t image)
     {
-        // The code image as FNV-1a 32 of its 16 KiB (build/vu1_lift's code dumps can be matched to it).
-        uint32_t image = 2166136261u;
-        for (size_t i = 0; code && i < 16384u; ++i)
-            image = (image ^ code[i]) * 16777619u;
         std::lock_guard<std::mutex> lock(g_otherMutex);
         ++g_otherPrograms[(static_cast<uint64_t>(image) << 32) | pc];
     }
@@ -843,7 +840,7 @@ namespace
         if (!s_on)
             return;
         static std::mutex s_mutex;
-        static uint64_t s_counts[17] = {};
+        static uint64_t s_counts[18] = {};
         static auto s_since = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(s_mutex);
         ++s_counts[kind];
@@ -854,7 +851,7 @@ namespace
         for (uint64_t count : s_counts)
             line += " " + std::to_string(count);
         line += otherProgramsLine();
-        std::fprintf(stderr, "%s (packets by PRIM type 0-7, native, culled, other program, not handled: layout, cull 3, vi41z, setup/lighting, later; kick set-up 0x678, object set-up 0x238)\n", line.c_str());
+        std::fprintf(stderr, "%s (packets by PRIM type 0-7, native, culled, other program, not handled: layout, cull 3, vi41z, setup/lighting, later; kick set-up 0x678, object set-up 0x238; programs as C++)\n", line.c_str());
         std::fill(std::begin(s_counts), std::end(s_counts), 0ull);
         s_since = now;
     }
@@ -1274,6 +1271,72 @@ bool vp2sMeshPrefix(const uint8_t *code, const uint8_t *data, uint32_t top, std:
     return true;
 }
 
+namespace
+{
+    // A run no native handler takes: the program as C++ (vp2s_vu1_programs.h) when its image was lifted, in place of
+    // VU1. VP2S_VU1_IMAGES=<dir>: the images that have none saved there (<image>.bin, and <image>.txt with the start
+    // pcs run) for tools/vu1_native.py. VP2S_VU1_PROGRAMS=0: VU1 runs them all (to compare).
+    bool runLifted(ps2x::native::Vu1HleRun &run)
+    {
+        static const bool s_on = [] { const char *v = std::getenv("VP2S_VU1_PROGRAMS"); return !(v && v[0] == '0'); }();
+        static const char *s_images = std::getenv("VP2S_VU1_IMAGES");
+        static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
+        if (!run.code || !run.data || !run.state || !run.kick)
+            return false;
+        const Vp2sVu1Program program = s_on ? vp2sVu1Program(run.code, run.startPc) : nullptr;
+        const uint32_t image = (!program && (s_log || s_images)) || s_log ? vp2sVu1ImageHash(run.code) : 0u;
+        if (!program)
+        {
+            if (s_log)
+                noteOtherProgram(run.startPc, image);
+            if (s_images)
+            {
+                static std::mutex s_mutex;
+                static std::unordered_map<uint64_t, bool> s_saved;
+                std::lock_guard<std::mutex> lock(s_mutex);
+                if (s_saved.emplace((static_cast<uint64_t>(image) << 32) | run.startPc, true).second)
+                {
+                    char path[600];
+                    std::snprintf(path, sizeof(path), "%s/%08x.bin", s_images, image);
+                    if (FILE *f = std::fopen(path, "wb"))
+                    {
+                        std::fwrite(run.code, 1, 16384u, f);
+                        std::fclose(f);
+                    }
+                    std::snprintf(path, sizeof(path), "%s/%08x.txt", s_images, image);
+                    if (FILE *f = std::fopen(path, "a"))
+                    {
+                        std::fprintf(f, "%x\n", run.startPc);
+                        std::fclose(f);
+                    }
+                }
+            }
+            return false;
+        }
+        // A program that reaches a jump the lifting did not see coming stops there: VU1 then runs it from the start.
+        thread_local std::array<uint8_t, 16384> data;
+        std::memcpy(data.data(), run.data, data.size());
+        const VU1State state = *run.state;
+        thread_local std::vector<std::vector<uint8_t>> kicks;
+        kicks.clear();
+        const auto keep = [](void *user, const uint8_t *packet, uint32_t bytes) {
+            static_cast<std::vector<std::vector<uint8_t>> *>(user)->emplace_back(packet, packet + bytes);
+        };
+        if (program(run.startPc, *run.state, run.data, run.top, keep, &kicks) == ~0ull)
+        {
+            std::memcpy(run.data, data.data(), data.size());
+            *run.state = state;
+            if (s_log)
+                noteOtherProgram(run.startPc, image);
+            return false;
+        }
+        for (const std::vector<uint8_t> &packet : kicks)
+            run.kick(run.user, packet.data(), static_cast<uint32_t>(packet.size()));
+        countHle(17);
+        return true;
+    }
+}
+
 bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
 {
     if (run.startPc == 0x0678u && run.code && run.data && run.state && run.kick && runKickSetup(run))
@@ -1301,9 +1364,8 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
                           vp2sMeshPrefix(run.code, run.data, run.top, prefix);
     if ((run.startPc != 0x0880u && !prefixed) || !run.code || !run.data || !run.state || !run.kick)
     {
-        static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
-        if (s_log)
-            noteOtherProgram(run.startPc, run.code);
+        if (runLifted(run))
+            return true;
         countHle(10);
         return false;
     }
@@ -1312,6 +1374,8 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
     const bool native = vp2sNativeMeshEnabled() && run.nativeDraw;
     if (!vp2sBuildMeshPacket(run.code, run.data, *run.state, run.top, packet, native ? &mesh : nullptr))
     {
+        if (runLifted(run))
+            return true;
         countHle(g_rejected);
         return false;
     }
