@@ -368,6 +368,17 @@ int main(int argc, char **argv)
         seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() / repeat;
         if (!ok)
         {
+            // What VU1 made of a run the native build left (its packets after the prefix), for the first few by reason.
+            static std::map<int, int> s_shown;
+            if (s_shown[vp2sMeshRejection()]++ < 3)
+            {
+                std::printf("rejected (reason %d) run %zu: strips %d, VU1 kicked %zu packets:", vp2sMeshRejection(), runs,
+                            [&] { int32_t v; std::memcpy(&v, record.dataBefore.data() + (record.top % 1024u) * 16u + 8u, 4u); return v; }(),
+                            record.packets.size());
+                for (size_t k = 0; k < record.packets.size(); ++k)
+                    std::printf(" %zu", record.packets[k].size());
+                std::printf("\n");
+            }
             ++rejections[vp2sMeshRejection()];
             continue;
         }

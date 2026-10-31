@@ -219,8 +219,9 @@ namespace
         std::fprintf(stderr, "[vp2s-native] not handled: %s %d/%d\n", what, a, b);
     }
 
-    // The set-up routines (header 5.x..w with data at 4.x..w), in order. False for one not done yet.
-    bool runSetup(Memory &mem, uint32_t top)
+    // The set-up routines (header 5.x..w with data at 4.x..w), in order. False for one not done yet. With the code
+    // and its set-up table (findLayout), a routine whose table entry only returns (JR) does nothing.
+    bool runSetup(Memory &mem, uint32_t top, const uint8_t *code = nullptr, uint32_t setupTable = 0u)
     {
         const uint32_t vertices = top + static_cast<uint32_t>(mem.i(top, 1));
         const int32_t count = mem.i(top + 2u, 1);
@@ -228,6 +229,8 @@ namespace
         {
             const int32_t routine = mem.i(top + 5u, static_cast<uint32_t>(r));
             const uint32_t base = top + static_cast<uint32_t>(mem.i(top + 4u, static_cast<uint32_t>(r)));
+            if (code && routine > 0 && ((lower(code, (setupTable + static_cast<uint32_t>(routine)) * 8u) >> 25) & 0x7Fu) == 0x24u)
+                continue;
             switch (routine)
             {
             case 0:
@@ -624,12 +627,11 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
     static Memory mem; // one run at a time (the VIF1 thread)
     mem.reset(data);
     top %= kQwords;
+    // The back-face cull: header 15.x selects it (0 culls), unless 15.x plus mem[41].z make 3, which culls too.
     const int32_t cullSum = mem.i(top + 15u, 0) + mem.i(41u, 2);
-    g_rejected = cullSum == 3 ? 12 : 13;
-    if (cullSum == 3 || mem.i(41u, 2) != 0) // paths not checked yet
-        return false;
+    const int32_t cullSelect = cullSum == 3 ? 0 : mem.i(top + 15u, 0);
     g_rejected = 14;
-    if (!runSetup(mem, top) || !runLighting(mem, state, top, layout))
+    if (!runSetup(mem, top, code, layout.setupTable) || !runLighting(mem, state, top, layout))
         return false;
     g_rejected = 15;
 
@@ -638,7 +640,7 @@ bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1Stat
                          Vec4{state.vf[3][0], state.vf[3][1], state.vf[3][2], state.vf[3][3]},
                          Vec4{state.vf[4][0], state.vf[4][1], state.vf[4][2], state.vf[4][3]}};
     const Mat4 clip = mem.matrix(85u);
-    const bool culls = cullSum == 0;
+    const bool culls = cullSelect == 0;
     const bool fogOn = mem.i(15u, 3) != 0;
     const Vec4 fog = mem.vf(68u);
     const uint32_t tagY = static_cast<uint32_t>(mem.i(top + 13u, 1));
