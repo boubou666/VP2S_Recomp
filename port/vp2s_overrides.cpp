@@ -341,6 +341,12 @@ namespace
             if (g_frameWait)
                 runtime.replaceFunction(kFrameWait, &nativeMeshFrameWait);
             std::cout << "[vp2s] native meshes: VP2's objects drawn by the native renderer" << std::endl;
+            // The objects' textures from the game's own uploads, kept from the first one (store mode: no GS memory).
+            if (const char *v = std::getenv("VP2S_NATIVE_MATERIAL"); !(v && v[0] == '0'))
+            {
+                ps2x::native::textures().setStoreMode(true);
+                ps2x::native::setUploadsWanted(true);
+            }
         }
 
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();

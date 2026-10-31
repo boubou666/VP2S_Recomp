@@ -360,6 +360,49 @@ namespace
     bool computeFactors(const Memory &mem, const VU1State &state, uint32_t top, const Layout &layout, int32_t mode,
                         bool tableA, uint32_t vertices, int32_t count, std::vector<Vec4> &factors);
 
+    // Lighting table B (mem[14].y, after table A; routine 0x3150, modes 0-2): three point lights at mem[20..22], colours
+    // mem[23..25], strengths mem[27].xyz. Each adds colour * max(0, n . (light - p) * strength / |light - p|^2), the
+    // dot raised to the power 2^(header 9.w), to the vertex's factor. In the microprogram's order (light 0 scaled by
+    // its strength, then by ERSADD's 1 / |d|^2; lights 1 and 2 by strength / |d|^2): its colours to within one unit,
+    // where the EFU's rounding differs.
+    void addPointLights(const Memory &mem, uint32_t top, uint32_t vertices, int32_t count, std::vector<Vec4> &factors)
+    {
+        const Vec4 lights[3] = {mem.vf(20u), mem.vf(21u), mem.vf(22u)};
+        const Vec4 colours[3] = {mem.vf(23u), mem.vf(24u), mem.vf(25u)};
+        const Vec4 strength = mem.vf(27u);
+        const int32_t power = mem.i(top + 9u, 3);
+        for (int32_t k = 0; k < count; ++k)
+        {
+            const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
+            const Vec4 n = mem.vf(v), p = mem.vf(v + 3u);
+            float dots[3];
+            for (int i = 0; i < 3; ++i)
+            {
+                const float d[3] = {lights[i][0] - p[0], lights[i][1] - p[1], lights[i][2] - p[2]};
+                const float squared = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                float scaled[3];
+                if (i == 0)
+                {
+                    const float inverse = squared != 0.0f ? 1.0f / squared : 0.0f; // ERSADD
+                    for (int c = 0; c < 3; ++c)
+                        scaled[c] = d[c] * strength[0] * inverse;
+                }
+                else
+                {
+                    const float q = squared != 0.0f ? strength[i] / squared : 0.0f;
+                    for (int c = 0; c < 3; ++c)
+                        scaled[c] = d[c] * q;
+                }
+                dots[i] = std::max(0.0f, n[0] * scaled[0] + n[1] * scaled[1] + n[2] * scaled[2]);
+                for (int32_t s = 0; s < power; ++s)
+                    dots[i] *= dots[i];
+            }
+            Vec4 &factor = factors[static_cast<size_t>(k)];
+            for (int c = 0; c < 3; ++c)
+                factor[c] += colours[0][c] * dots[0] + colours[1][c] * dots[1] + colours[2][c] * dots[2];
+        }
+    }
+
     // Vertex colours lit in place: each vertex's factor from lighting table D (mem[14].w == 0) or A, then table C's
     // spot lights, then colour times factor. False for a case not done yet.
     bool runLighting(Memory &mem, const VU1State &state, uint32_t top, const Layout &layout)
@@ -375,7 +418,8 @@ namespace
         {
             // Lighting table A (mem[14].w != 0), then B (mem[14].y) and C (mem[14].z) when set. A's modes 1-3 are
             // table D's code; its mode 0 gives every vertex mem[13] as it is (no mem[14].x test).
-            if (mem.i(14u, 1) != 0 || (mode != 0 && mode != 1 && mode != 3))
+            // Table B (point lights) is done for modes 0-2 (its routine 0x3150), not mode 3's (0x32a0, with specular).
+            if ((mem.i(14u, 1) != 0 && mode == 3) || (mode != 0 && mode != 1 && mode != 3))
             {
                 noteUnhandled("lighting mode/table (mem[14].w)", mode, mem.i(14u, 3) * 100 + mem.i(14u, 1) * 10 + mem.i(14u, 2));
                 return false;
@@ -383,6 +427,8 @@ namespace
         }
         if (!computeFactors(mem, state, top, layout, mode, tableA, vertices, count, factors))
             return false;
+        if (tableA && mem.i(14u, 1) != 0)
+            addPointLights(mem, top, vertices, count, factors);
         if (spots != 0)
         {
             if (!addSpotLight(mem, state, top, vertices, count, mode, 0u, factors) ||
@@ -549,6 +595,11 @@ namespace
     thread_local int g_rejected = 0; // why vp2sBuildMeshPacket last returned false (VP2S_NATIVE_MESH_LOG's columns)
 }
 
+int vp2sMeshRejection()
+{
+    return g_rejected;
+}
+
 bool vp2sBuildMeshPacket(const uint8_t *code, const uint8_t *data, const VU1State &state, uint32_t top,
                          std::vector<uint8_t> &packet, Vp2sNativeMesh *native)
 {
@@ -707,9 +758,10 @@ namespace
         ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
         renderer.setStreamDraws(true);
         renderer.setEnabled(true);
-        // VP2's objects take their textures where the GS keeps them (Material::fromGsContext): the renderer's own
-        // texture cache would only copy every upload for nothing.
-        ps2x::native::setUploadsWanted(false);
+        // VP2's objects take their textures from the renderer's texture cache, fed by the game's uploads; only the
+        // comparison path (VP2S_NATIVE_MATERIAL=0, Material::fromGsContext) does without them.
+        if (const char *v = std::getenv("VP2S_NATIVE_MATERIAL"); v && v[0] == '0')
+            ps2x::native::setUploadsWanted(false);
         renderer.beginFrame(nativeScreen());
         g_nativeStarted = true;
     }
@@ -773,7 +825,7 @@ namespace
         if (!s_on)
             return;
         static std::mutex s_mutex;
-        static uint64_t s_counts[16] = {};
+        static uint64_t s_counts[17] = {};
         static auto s_since = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(s_mutex);
         ++s_counts[kind];
@@ -784,7 +836,7 @@ namespace
         for (uint64_t count : s_counts)
             line += " " + std::to_string(count);
         line += otherProgramsLine();
-        std::fprintf(stderr, "%s (packets by PRIM type 0-7, native, culled, other program, not handled: layout, cull 3, vi41z, setup/lighting, later)\n", line.c_str());
+        std::fprintf(stderr, "%s (packets by PRIM type 0-7, native, culled, other program, not handled: layout, cull 3, vi41z, setup/lighting, later; kick set-up 0x678, object set-up 0x238)\n", line.c_str());
         std::fill(std::begin(s_counts), std::end(s_counts), 0ull);
         s_since = now;
     }
@@ -824,6 +876,320 @@ namespace
         return 0u;
     }
 
+    // The GS drawing registers VP2's mesh programs set in the packets they kick (the frame's header, an object's
+    // prefix, the kick set-up between batches), per context: the native objects' materials come from them, not from
+    // the GS. TEXA and FOGCOL, which the game sets in other packets, come from the texture cache's scan of the game's
+    // packets (gameTexa, gameFogColour).
+    struct DrawRegisters
+    {
+        uint64_t tex0 = 0, alpha = 0, test = 0, zbuf = 0, clamp = 0, fba = 0;
+    };
+    DrawRegisters g_drawRegisters[2]; // the VIF1 thread's (one microprogram at a time)
+
+    void noteRegisterWrites(const uint8_t *packet, uint32_t bytes)
+    {
+        uint32_t off = 0;
+        while (off + 16u <= bytes)
+        {
+            uint64_t tag, regs;
+            std::memcpy(&tag, packet + off, 8u);
+            std::memcpy(&regs, packet + off + 8u, 8u);
+            off += 16u;
+            const uint32_t nloop = static_cast<uint32_t>(tag & 0x7FFFu), flg = static_cast<uint32_t>((tag >> 58) & 3u);
+            const uint32_t nreg = static_cast<uint32_t>((tag >> 60) & 15u) == 0u ? 16u : static_cast<uint32_t>((tag >> 60) & 15u);
+            if (flg != 0u) // REGLIST / IMAGE: not in these packets
+                return;
+            for (uint32_t k = 0; k < nloop; ++k)
+                for (uint32_t j = 0; j < nreg; ++j)
+                {
+                    const uint32_t at = off + 16u * (k * nreg + j);
+                    if (((regs >> (4u * j)) & 15u) != 0xEu || at + 16u > bytes) // A+D only
+                        continue;
+                    uint64_t data, address;
+                    std::memcpy(&data, packet + at, 8u);
+                    std::memcpy(&address, packet + at + 8u, 8u);
+                    switch (address & 0xFFu)
+                    {
+                    case 0x06: g_drawRegisters[0].tex0 = data; break;
+                    case 0x07: g_drawRegisters[1].tex0 = data; break;
+                    case 0x08: g_drawRegisters[0].clamp = data; break;
+                    case 0x09: g_drawRegisters[1].clamp = data; break;
+                    case 0x42: g_drawRegisters[0].alpha = data; break;
+                    case 0x43: g_drawRegisters[1].alpha = data; break;
+                    case 0x47: g_drawRegisters[0].test = data; break;
+                    case 0x48: g_drawRegisters[1].test = data; break;
+                    case 0x4A: g_drawRegisters[0].fba = data; break;
+                    case 0x4B: g_drawRegisters[1].fba = data; break;
+                    case 0x4E: g_drawRegisters[0].zbuf = data; break;
+                    case 0x4F: g_drawRegisters[1].zbuf = data; break;
+                    default: break;
+                    }
+                }
+            off += nloop * nreg * 16u;
+            if ((tag >> 15) & 1u) // EOP
+                return;
+        }
+    }
+
+    // An object's material from its strips' PRIM and the registers its packets set.
+    ps2x::native::Material nativeMaterial(uint32_t prim)
+    {
+        ps2x::native::Material m;
+        const DrawRegisters &r = g_drawRegisters[(prim >> 9) & 1u]; // CTXT
+        m.textured = (prim >> 4) & 1u;   // TME
+        m.fog = (prim >> 5) & 1u;        // FGE
+        m.alphaBlend = (prim >> 6) & 1u; // ABE
+        m.tex0 = r.tex0;
+        m.blend = m.alphaBlend ? ps2x::native::blendFromAlpha(r.alpha) : ps2x::native::Material::Blend::Opaque;
+        const bool ate = r.test & 1u;
+        const uint32_t atst = static_cast<uint32_t>((r.test >> 1) & 7u), aref = static_cast<uint32_t>((r.test >> 4) & 0xFFu);
+        m.alphaTest = ate && (atst == 5u || atst == 6u); // GEQUAL / GREATER (VP2's meshes: GREATER 0)
+        m.alphaRef = static_cast<uint8_t>(atst == 5u && aref > 0u ? aref - 1u : aref);
+        const bool zte = (r.test >> 16) & 1u;
+        m.depthTest = zte && ((r.test >> 17) & 3u) != 1u; // ZTST ALWAYS: no test
+        m.depthWrite = ((r.zbuf >> 32) & 1u) == 0u;      // ZMSK
+        m.clampU = (r.clamp & 3u) == 1u;
+        m.clampV = ((r.clamp >> 2) & 3u) == 1u;
+        m.clamp = r.clamp; // VP2's atlases: REGION_CLAMP
+        m.fba = (r.fba & 1u) != 0u;
+        // TEXA and FOGCOL as the game wrote them in its own packets (the texture cache reads them there), not the GS's.
+        m.texa = ps2x::native::textures().gameTexa();
+        m.fogColour = ps2x::native::textures().gameFogColour();
+        return m;
+    }
+
+    // Program 0x0238 (every known build, code 0x0000..0x0678 checked by its hash): the per-object set-up the mesh
+    // programs read, from the object matrix O (mem[9..12], rows), the camera V (mem[48..51]), the screen projection P
+    // (mem[52..55]), the clip matrix C (mem[56..59]) and the frame's four light directions L (mem[1..4].xyz):
+    //   vf01..vf04 = the columns of P^T V O (object to screen); mem[77..80] = (V O)^T, mem[85..88] = (V O)^T C
+    //   (rows); mem[89..91] = the 3x3 of V O transposed (w 0), mem[92] = the last row of (V O)^T P;
+    //   mem[73..75] = Rn^T, Rn the rows of O's rotation normalised;
+    //   vf05..vf07 = Rn^T L^T (the lights in object space, one component per register); vf08 = vf13 = the eye in
+    //   object space, -(R^T t) of V O, and mem[72].xyz its direction; mem[37] = Rn^T times the shadow light's
+    //   direction (or, with lighting table A and mem[40].w, its position through O's rigid inverse);
+    //   with table A (mem[14].w): the point and spot light positions mem[20..22], mem[28..29] through O's rigid
+    //   inverse (R^T, -R^T t times their w), the spot directions mem[30..31] by Rn^T;
+    //   mem[81].z = 0x380, .w = mem[36].y, mem[47].x = 0x8000 (an empty GIF packet it kicks), mem[1023].w = 0,
+    //   vf18 = 0, vf31.xyz = 1.
+    // Checked against recorded runs (vp2s_hle_check): the same rows and registers, to float rounding.
+    bool runObjectSetup(ps2x::native::Vu1HleRun &run)
+    {
+        if (fnv(run.code, 0x678u) != 0x1fb529560d4ac694ull)
+            return false;
+        uint8_t *data = run.data;
+        VU1State &state = *run.state;
+        const auto row = [&](uint32_t r) {
+            Vec4 v;
+            std::memcpy(v.data(), data + r * 16u, 16u);
+            return v;
+        };
+        const auto setRow = [&](uint32_t r, const Vec4 &v) { std::memcpy(data + r * 16u, v.data(), 16u); };
+        const auto rowI = [&](uint32_t r, uint32_t lane) {
+            int32_t v;
+            std::memcpy(&v, data + r * 16u + lane * 4u, 4u);
+            return v;
+        };
+        const auto setRowI = [&](uint32_t r, uint32_t lane, int32_t v) { std::memcpy(data + r * 16u + lane * 4u, &v, 4u); };
+        const auto block = [&](uint32_t r) { return Mat4{row(r), row(r + 1u), row(r + 2u), row(r + 3u)}; };
+        const auto mul = [](const Mat4 &a, const Mat4 &b) {
+            Mat4 m{};
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    m[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
+            return m;
+        };
+        const auto transpose = [](const Mat4 &a) {
+            Mat4 m{};
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    m[i][j] = a[j][i];
+            return m;
+        };
+        const Mat4 o = block(9u), v = block(48u), p = block(52u), c = block(56u);
+        const Mat4 vo = mul(v, o), voT = transpose(vo);
+        const Mat4 screen = mul(transpose(p), vo);
+        for (int k = 0; k < 4; ++k)
+            for (int r = 0; r < 4; ++r)
+                state.vf[1 + k][r] = screen[r][k];
+        const Mat4 voTc = mul(voT, c), voTp = mul(voT, p);
+        for (uint32_t i = 0; i < 4u; ++i)
+        {
+            setRow(77u + i, voT[i]);
+            setRow(85u + i, voTc[i]);
+        }
+        for (uint32_t i = 0; i < 3u; ++i)
+            setRow(89u + i, Vec4{vo[0][i], vo[1][i], vo[2][i], 0.0f});
+        setRow(92u, voTp[3]);
+        // Rn: O's rotation rows normalised.
+        float rn[3][3];
+        for (int i = 0; i < 3; ++i)
+        {
+            const float length = std::sqrt(o[i][0] * o[i][0] + o[i][1] * o[i][1] + o[i][2] * o[i][2]);
+            const float inverse = length != 0.0f ? 1.0f / length : 0.0f;
+            for (int j = 0; j < 3; ++j)
+                rn[i][j] = o[i][j] * inverse;
+        }
+        const auto byRnT = [&](const Vec4 &d) {
+            return Vec4{rn[0][0] * d[0] + rn[1][0] * d[1] + rn[2][0] * d[2], rn[0][1] * d[0] + rn[1][1] * d[1] + rn[2][1] * d[2],
+                        rn[0][2] * d[0] + rn[1][2] * d[1] + rn[2][2] * d[2], 0.0f};
+        };
+        for (uint32_t i = 0; i < 3u; ++i)
+            setRow(73u + i, Vec4{rn[0][i], rn[1][i], rn[2][i], 0.0f});
+        for (uint32_t light = 0; light < 4u; ++light)
+        {
+            const Vec4 d = byRnT(row(1u + light));
+            for (int comp = 0; comp < 3; ++comp)
+                state.vf[5 + comp][light] = d[comp];
+        }
+        // The eye in object space: the rigid inverse of V O applied to the origin.
+        Vec4 eye{};
+        for (int j = 0; j < 3; ++j)
+            eye[j] = -(vo[0][j] * vo[0][3] + vo[1][j] * vo[1][3] + vo[2][j] * vo[2][3]);
+        std::memcpy(state.vf[8], eye.data(), 16u);
+        std::memcpy(state.vf[13], eye.data(), 16u);
+        {
+            const float length = std::sqrt(eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2]);
+            const float inverse = length != 0.0f ? 1.0f / length : 0.0f;
+            setRow(72u, Vec4{eye[0] * inverse, eye[1] * inverse, eye[2] * inverse, 0.0f});
+        }
+        // O's rigid inverse (R^T, -R^T t scaled by the point's w), for light positions.
+        const auto rigidInverse = [&](const Vec4 &x) {
+            Vec4 out{};
+            for (int j = 0; j < 3; ++j)
+                out[j] = o[0][j] * (x[0] - o[0][3] * x[3]) + o[1][j] * (x[1] - o[1][3] * x[3]) + o[2][j] * (x[2] - o[2][3] * x[3]);
+            out[3] = x[3];
+            return out;
+        };
+        const bool tableA = rowI(14u, 3) != 0;
+        if (tableA && rowI(40u, 3) != 0)
+            setRow(37u, rigidInverse(row(37u)));
+        else
+            setRow(37u, byRnT(row(37u)));
+        if (tableA)
+        {
+            for (uint32_t r : {20u, 21u, 22u, 28u, 29u})
+                setRow(r, rigidInverse(row(r)));
+            for (uint32_t r : {30u, 31u})
+                setRow(r, byRnT(row(r)));
+        }
+        setRowI(81u, 2, 0x380);
+        setRowI(81u, 3, rowI(36u, 1));
+        setRowI(1023u, 3, 0);
+        std::memset(state.vf[18], 0, 16u);
+        state.vf[31][0] = state.vf[31][1] = state.vf[31][2] = 1.0f;
+        setRowI(47u, 0, 0x8000);
+        run.kick(run.user, data + 47u * 16u, 16u);
+        return true;
+    }
+
+    // Program 0x06f0 (one build, code 0x06f0..0x0f30 checked by its hash): an object's shadow, which the microprogram
+    // draws as a shadow volume counted in the frame's alpha (the CLUT trick). Natively: the object's triangles after
+    // its set-up passes (the same ones as the meshes'), each extruded along the light (mem[37], object space) down to
+    // the object's ground plane (y = 0) into a closed prism; the union of the prisms is the object's shadow volume,
+    // which the native renderer counts and darkens the frame in once (Material::Blend::ShadowVolume), by the 0x40
+    // alpha of the game's darkening sprites. Drawn with the object's screen matrix, mem[896..899] (its columns), whose
+    // flattened copy along the same light the microprogram finds at mem[5..8].
+    bool buildShadowVolume(const uint8_t *code, const uint8_t *data, uint32_t top, std::vector<ps2x::native::Vertex> &out,
+                           float matrix[16])
+    {
+        if (fnv(code + 0x6f0u, 0x840u) != 0xd42b1eba408869a3ull)
+            return false;
+        static Memory mem;
+        mem.reset(data);
+        top %= kQwords;
+        if (!runSetup(mem, top))
+            return false;
+        const Vec4 light = mem.vf(37u);
+        if (std::fabs(light[1]) < 1e-3f)
+            return false; // light along the ground: no extrusion to it
+        for (uint32_t c = 0; c < 4u; ++c)
+            for (uint32_t r = 0; r < 4u; ++r)
+                matrix[4u * c + r] = mem.f(896u + c, r);
+        const int32_t strips = mem.i(top, 2);
+        const uint32_t lengths = top + static_cast<uint32_t>(mem.i(top, 3));
+        uint32_t v = top + static_cast<uint32_t>(mem.i(top, 1));
+        out.clear();
+        using P3 = std::array<float, 3>;
+        const auto sub = [](const P3 &a, const P3 &b) { return P3{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+        const auto cross = [](const P3 &a, const P3 &b) {
+            return P3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+        };
+        const auto dot = [](const P3 &a, const P3 &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        // Down the light well past the object's ground plane: the PS2's volume darkens what lies under the object along
+        // the light (PCSX2: Alicia's shadow on the rocks below her), not only what is between her and y = 0.
+        const float length = std::sqrt(light[0] * light[0] + light[1] * light[1] + light[2] * light[2]);
+        const float reach = length > 0.0f ? 3000.0f / length : 0.0f;
+        const auto flat = [&](const P3 &p) {
+            const float t = std::min(0.0f, p[1] / light[1]) - reach; // p - light * t moves down the light
+            return P3{p[0] - light[0] * t, p[1] - light[1] * t, p[2] - light[2] * t};
+        };
+        const auto emit = [&](const P3 &a, const P3 &b, const P3 &c, const P3 &inside) {
+            // Each face outward: away from the prism's centre.
+            const P3 n = cross(sub(b, a), sub(c, a));
+            const P3 centre = {(a[0] + b[0] + c[0]) / 3.0f, (a[1] + b[1] + c[1]) / 3.0f, (a[2] + b[2] + c[2]) / 3.0f};
+            const bool flip = dot(n, sub(centre, inside)) < 0.0f;
+            for (const P3 *p : {&a, flip ? &c : &b, flip ? &b : &c})
+            {
+                ps2x::native::Vertex vertex;
+                vertex.x = (*p)[0];
+                vertex.y = (*p)[1];
+                vertex.z = (*p)[2];
+                vertex.rgba = 0x40000000u; // the darkening sprites' alpha
+                out.push_back(vertex);
+            }
+        };
+        for (int32_t s = 0; s < strips; ++s)
+        {
+            const uint32_t count = static_cast<uint32_t>(mem.i(lengths + static_cast<uint32_t>(s), 0)) & 0xFFFFu;
+            for (uint32_t k = 0; k < count; ++k, v += 4u)
+            {
+                if (k < 2u)
+                    continue;
+                const P3 a = {mem.f(v - 5u, 0), mem.f(v - 5u, 1), mem.f(v - 5u, 2)};
+                const P3 b = {mem.f(v - 1u, 0), mem.f(v - 1u, 1), mem.f(v - 1u, 2)};
+                const P3 c = {mem.f(v + 3u, 0), mem.f(v + 3u, 1), mem.f(v + 3u, 2)};
+                const P3 n = cross(sub(b, a), sub(c, a));
+                if (dot(n, n) < 1e-12f) // the strips' padding
+                    continue;
+                const P3 a2 = flat(a), b2 = flat(b), c2 = flat(c);
+                const P3 inside = {(a[0] + b[0] + c[0] + a2[0] + b2[0] + c2[0]) / 6.0f, (a[1] + b[1] + c[1] + a2[1] + b2[1] + c2[1]) / 6.0f,
+                                   (a[2] + b[2] + c[2] + a2[2] + b2[2] + c2[2]) / 6.0f};
+                emit(a, b, c, inside);
+                emit(a2, b2, c2, inside);
+                emit(a, b, b2, inside);
+                emit(a, b2, a2, inside);
+                emit(b, c, c2, inside);
+                emit(b, c2, b2, inside);
+                emit(c, a, a2, inside);
+                emit(c, a2, c2, inside);
+            }
+        }
+        return !out.empty();
+    }
+
+    bool runShadow(ps2x::native::Vu1HleRun &run)
+    {
+        thread_local std::vector<ps2x::native::Vertex> volume;
+        float matrix[16];
+        if (!vp2sNativeMeshEnabled() || !run.nativeDraw || !buildShadowVolume(run.code, run.data, run.top, volume, matrix))
+            return false;
+        ps2x::native::Material material;
+        material.textured = false;
+        material.blend = ps2x::native::Material::Blend::ShadowVolume;
+        material.depthWrite = false;
+        uint64_t group = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_nativeMutex);
+            ps2x::native::Renderer &renderer = ps2x::native::Renderer::instance();
+            ensureNativeStarted();
+            group = ++g_nativeGroup;
+            renderer.beginGroup(group);
+            renderer.draw(material, matrix, volume.data(), static_cast<uint32_t>(volume.size()));
+        }
+        run.nativeDraw(run.nativeUser, group, 0);
+        return true;
+    }
+
     // Program 0x0678 (every known build, checked by its code's hash): copies mem[96..100] to 0x3aa and kicks the
     // GS packet there (a register set-up between object batches), leaving vf01..vf05 = mem[96..100], vi01 = 0x3aa.
     bool runKickSetup(ps2x::native::Vu1HleRun &run)
@@ -838,9 +1204,24 @@ namespace
         run.state->vi[1] = static_cast<int32_t>(kTo);
         const uint32_t bytes = gifPacketBytes(run.data, kTo);
         if (bytes != 0u)
+        {
+            noteRegisterWrites(run.data + kTo * 16u, bytes);
             run.kick(run.user, run.data + kTo * 16u, bytes);
+        }
         return true;
     }
+}
+
+bool vp2sMeshHeader(const uint8_t *code, const uint8_t *data, std::vector<uint8_t> &header)
+{
+    // 0x06e0..0x0770: kicks mem[69] (a GIF tag) and mem[17..18] (its A+D register writes), then branches into 0x0770's
+    // code past its own header reads.
+    if (fnv(code + 0x6e0u, 0x90u) != 0x6be0046a54d4ce47ull) // the other programs builds load at 0x06e0 differ throughout
+        return false;
+    header.resize(3u * 16u);
+    std::memcpy(header.data(), data + 69u * 16u, 16u);
+    std::memcpy(header.data() + 16u, data + 17u * 16u, 32u);
+    return true;
 }
 
 bool vp2sMeshPrefix(const uint8_t *code, const uint8_t *data, uint32_t top, std::vector<uint8_t> &prefix)
@@ -850,7 +1231,10 @@ bool vp2sMeshPrefix(const uint8_t *code, const uint8_t *data, uint32_t top, std:
     std::array<uint8_t, 0x110u> bytes;
     std::memcpy(bytes.data(), code + 0x770u, bytes.size());
     std::memset(bytes.data() + 0x30u, 0, 8u);
-    if (fnv(bytes.data(), bytes.size()) != 0x633d036a69d5ea3aull)
+    // The second build (forest, dungeons) differs only by the branch at 0x0870 into the vertex loop, which sits 16 bytes
+    // further on.
+    const uint64_t hash = fnv(bytes.data(), bytes.size());
+    if (hash != 0x633d036a69d5ea3aull && hash != 0x8ae32d0e3bb604b6ull)
         return false;
     const uint32_t bal = lower(code, 0x08a8u);
     if (((bal >> 25) & 0x7Fu) != 0x21u)
@@ -880,9 +1264,24 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
         countHle(15);
         return true;
     }
-    thread_local std::vector<uint8_t> prefix;
+    if (run.startPc == 0x0238u && run.code && run.data && run.state && run.kick && runObjectSetup(run))
+    {
+        countHle(16);
+        return true;
+    }
+    // VP2S_NATIVE_SHADOW=0: the shadow program on VU1 (its volume counted in the frame's alpha, as on the PS2).
+    static const bool s_nativeShadow = [] { const char *v = std::getenv("VP2S_NATIVE_SHADOW"); return !(v && v[0] == '0'); }();
+    if (run.startPc == 0x06f0u && s_nativeShadow && run.code && run.data && runShadow(run))
+    {
+        countHle(16);
+        return true;
+    }
+    thread_local std::vector<uint8_t> prefix, header;
     prefix.clear();
-    const bool prefixed = run.startPc == 0x0770u && run.code && run.data && vp2sMeshPrefix(run.code, run.data, run.top, prefix);
+    header.clear();
+    const bool headed = run.startPc == 0x06e0u && run.code && run.data && vp2sMeshHeader(run.code, run.data, header);
+    const bool prefixed = (run.startPc == 0x0770u || headed) && run.code && run.data &&
+                          vp2sMeshPrefix(run.code, run.data, run.top, prefix);
     if ((run.startPc != 0x0880u && !prefixed) || !run.code || !run.data || !run.state || !run.kick)
     {
         static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
@@ -899,9 +1298,25 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
         countHle(g_rejected);
         return false;
     }
-    // Program 0x0770 kicks its register prefix first (XGKICK vi07), then the object.
+    // Program 0x06e0 kicks the frame's register header first, then runs as 0x0770: its register prefix (XGKICK vi07),
+    // then the object. Their output buffer flag (mem[81].w) moves as theirs does: 0x06e0 sets mem[36].x then 0x0770's
+    // part swaps it, so 0x06e0 leaves mem[36].y; 0x0770 swaps between mem[36].x and .y.
+    if (headed)
+    {
+        noteRegisterWrites(header.data(), static_cast<uint32_t>(header.size()));
+        run.kick(run.user, header.data(), static_cast<uint32_t>(header.size()));
+    }
     if (prefixed)
+    {
+        noteRegisterWrites(prefix.data(), static_cast<uint32_t>(prefix.size()));
         run.kick(run.user, prefix.data(), static_cast<uint32_t>(prefix.size()));
+        int32_t flag, x, y;
+        std::memcpy(&flag, run.data + 81u * 16u + 12u, 4u);
+        std::memcpy(&x, run.data + 36u * 16u, 4u);
+        std::memcpy(&y, run.data + 36u * 16u + 4u, 4u);
+        const int32_t next = headed || flag == x ? y : x;
+        std::memcpy(run.data + 81u * 16u + 12u, &next, 4u);
+    }
     static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
     static int s_logged = 0;
     if (native && s_log && s_logged < 12)
@@ -917,12 +1332,19 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
         run.kick(run.user, packet.data(), static_cast<uint32_t>(packet.size()));
         return true;
     }
-    ps2x::native::Material material;
-    material.fromGsContext = true;
-    material.textured = (mesh.prim >> 4) & 1u; // TME
-    material.fog = (mesh.prim >> 5) & 1u;      // FGE
-    material.alphaBlend = (mesh.prim >> 6) & 1u; // ABE
-    material.context = static_cast<uint8_t>((mesh.prim >> 9) & 1u); // CTXT
+    // The object's material from the registers its packets set, drawn by the native renderer. VP2S_NATIVE_MATERIAL=0
+    // (comparison only): the GS state where the object sits, drawn by the GS front end as GS primitives.
+    static const bool s_ownMaterial = [] { const char *v = std::getenv("VP2S_NATIVE_MATERIAL"); return !(v && v[0] == '0'); }();
+    ps2x::native::Material material = nativeMaterial(mesh.prim);
+    if (!s_ownMaterial)
+    {
+        material = ps2x::native::Material{};
+        material.fromGsContext = true;
+        material.textured = (mesh.prim >> 4) & 1u;
+        material.fog = (mesh.prim >> 5) & 1u;
+        material.alphaBlend = (mesh.prim >> 6) & 1u;
+        material.context = static_cast<uint8_t>((mesh.prim >> 9) & 1u);
+    }
     uint64_t group = 0;
     {
         std::lock_guard<std::mutex> lock(g_nativeMutex);

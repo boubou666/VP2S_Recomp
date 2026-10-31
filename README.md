@@ -33,13 +33,17 @@ The game's own MIPS R5900 code, rebuilt as a Windows program. Goal: no PS2 emula
 >
 > Work that fixes or tunes an emulated component is not done: the component is replaced natively instead, and its
 > visual bugs (for example Alicia's field shadow, drawn through the GS stencil trick) are fixed by that replacement.
+>
+> An emulated path is never the default, not even for a while because the native one is broken: the native path
+> stays the default and gets fixed. Emulated code may remain only behind an explicit comparison switch (for example
+> `VP2S_NATIVE_MATERIAL=0`, the GS state's materials, to compare against).
 
 What is still emulated today, and the order it is removed in (branch `vp2s/native` of the PS2Recomp fork):
 
 | # | Emulated today | Native replacement |
 |---|---|---|
-| 1 | VU1 microprograms (compiled ahead of time, but keeping microcode flags and pipeline timing) | each program lifted to C++ (`tools/vu1_lift.py`) and drawn as native batches from the game's data (meshes, matrices, lights), no GIF packets |
-| 2 | GS front end and GPU back end (PS2 VRAM, swizzling, CLUTs, texture buffer, display buffer copies) | the native renderer with its own targets and textures |
+| 1 | VU1 microprograms not drawn natively yet: effects (0xd88, 0x6f8, 0x9b8, 0x9c0, 0x1410, 0x1690, 0x818) and the 0x6e0 variants other than the mesh one; they run compiled ahead of time but keep microcode flags and pipeline timing | each drawn natively from the game's data, as these already are (`port/vp2s_vu1_hle.cpp`): the meshes (0x880, 0x770, 0x6e0), the object and light set-up (0x238, matrices and lights computed in C++), the shadow (0x6f0, a native shadow volume) |
+| 2 | GS front end and GPU back end (PS2 VRAM, swizzling, CLUTs, texture buffer, display buffer copies) for the 2D, the effects and the frame targets | the native renderer with its own targets and textures. The native meshes already take their materials and textures from the game's data: each texture is decoded from the uploads the game sends (assets stored in the GS's layout laid out once per decode, no VRAM kept); `PS2X_NATIVE_TEX_COMPARE=<n>` compares against the GS memory decode, as a diagnosis only |
 | 3 | VIF/DMA unpacking | direct reads of the game's packet data |
 | 4 | VU0 macro and micro mode (`vcallms`) | C++ math |
 | 5 | SPU2 | native audio mixer on the host clock |

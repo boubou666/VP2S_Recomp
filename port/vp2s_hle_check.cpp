@@ -6,11 +6,13 @@
 #include "vp2s_vu1_hle.h"
 #include "runtime/ps2_vu1_trace.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <vector>
 
 // ps2_runtime expects the generated runner to provide its function table; this tool runs no guest code.
@@ -86,12 +88,75 @@ int main(int argc, char **argv)
     std::vector<uint8_t> code(Vu1TraceRecord::kMemorySize, 0u);
     Vu1TraceRecord record;
     size_t runs = 0, built = 0, vertices = 0, badSt = 0, badRgba = 0, badXyz = 0, badAdc = 0, badFog = 0, badCount = 0;
+    std::map<int, size_t> rejections; // vp2sMeshRejection() of the runs not built natively
     double seconds = 0.0;
     std::vector<uint8_t> packet;
     while (readVu1TraceRecord(in, record))
     {
         if (!record.code.empty())
             code = record.code;
+        if (record.startPC == 0x0238u && record.resume == 0u)
+        {
+            // Program 0x0238 (vp2sVu1Hle's object set-up): the rows and registers it leaves, to float rounding.
+            static size_t s_setupRuns = 0, s_setupBad = 0;
+            std::vector<uint8_t> data = record.dataBefore;
+            VU1State state = record.stateBefore;
+            std::vector<uint8_t> kicked;
+            ps2x::native::Vu1HleRun run;
+            run.code = code.data();
+            run.data = data.data();
+            run.state = &state;
+            run.startPc = record.startPC;
+            run.top = record.top;
+            run.user = &kicked;
+            run.kick = [](void *user, const uint8_t *bytes, uint32_t size)
+            { auto &out = *static_cast<std::vector<uint8_t> *>(user); out.insert(out.end(), bytes, bytes + size); };
+            const bool handled = vp2sVu1Hle(run);
+            ++s_setupRuns;
+            // Relative to the vector's size: a far object's eye (1e7 away) or a light near its translation leaves float
+            // cancellation in the small components, the same in either computation's rounding.
+            const auto close = [](const float *got, const float *want, int lanes) {
+                float size = 1.0f;
+                for (int i = 0; i < lanes; ++i)
+                    size = std::max(size, std::fabs(want[i]));
+                for (int i = 0; i < lanes; ++i)
+                    if (std::fabs(got[i] - want[i]) > 1e-4f * size)
+                        return false;
+                return true;
+            };
+            int badRow = -1, badReg = -1;
+            for (uint32_t r : {20u, 21u, 22u, 28u, 29u, 30u, 31u, 37u, 73u, 74u, 75u, 77u, 78u, 79u, 80u, 85u, 86u, 87u, 88u, 89u,
+                               90u, 91u, 92u})
+                if (badRow < 0 && !close(reinterpret_cast<const float *>(data.data() + r * 16u),
+                                         reinterpret_cast<const float *>(record.dataAfter.data() + r * 16u), 4))
+                    badRow = static_cast<int>(r);
+            if (badRow < 0 && !close(reinterpret_cast<const float *>(data.data() + 72u * 16u),
+                                     reinterpret_cast<const float *>(record.dataAfter.data() + 72u * 16u), 3))
+                badRow = 72;
+            for (int r : {1, 2, 3, 4, 5, 6, 7})
+                if (badReg < 0 && !close(state.vf[r], record.stateAfter.vf[r], 4))
+                    badReg = r;
+            if (badReg < 0 && !close(state.vf[8], record.stateAfter.vf[8], 3))
+                badReg = 8;
+            const bool samePacket = !record.packets.empty() && kicked == record.packets[0];
+            if (!handled || badRow >= 0 || badReg >= 0 || !samePacket)
+            {
+                if (s_setupBad++ < 10u)
+                {
+                    std::printf("object set-up run %zu: handled %d row %d reg %d packet %d\n", s_setupRuns, handled ? 1 : 0, badRow,
+                                badReg, samePacket ? 1 : 0);
+                    const float *got = badReg >= 0 ? state.vf[badReg] : reinterpret_cast<const float *>(data.data() + badRow * 16u);
+                    const float *want = badReg >= 0 ? record.stateAfter.vf[badReg]
+                                                    : reinterpret_cast<const float *>(record.dataAfter.data() + badRow * 16u);
+                    if (badReg >= 0 || badRow >= 0)
+                        std::printf("  got %g %g %g %g want %g %g %g %g\n", got[0], got[1], got[2], got[3], want[0], want[1], want[2],
+                                    want[3]);
+                }
+            }
+            if ((s_setupRuns % 2000u) == 0u)
+                std::printf("object set-up: %zu runs, %zu differ\n", s_setupRuns, s_setupBad);
+            continue;
+        }
         if (record.startPC == 0x0678u && record.resume == 0u)
         {
             // Program 0x0678 (vp2sVu1Hle's kick set-up): the packet kicked, the memory and registers it leaves.
@@ -124,24 +189,41 @@ int main(int argc, char **argv)
                 std::printf("kick setup: %zu runs, %zu differ\n", s_kickRuns, s_kickBad);
             continue;
         }
-        if ((record.startPC != 0x0880u && record.startPC != 0x0770u) || record.resume != 0u)
+        if ((record.startPC != 0x0880u && record.startPC != 0x0770u && record.startPC != 0x06e0u) || record.resume != 0u)
             continue;
-        // Program 0x0770: its register prefix is the first packet it kicks, the object the second.
+        // Program 0x0770: its register prefix is the first packet it kicks, the object the second. Program 0x06e0: its
+        // register header first, then as 0x0770.
         size_t meshPacket = 0;
-        if (record.startPC == 0x0770u)
+        if (record.startPC == 0x06e0u)
+        {
+            static size_t s_headerRuns = 0, s_headerBad = 0;
+            std::vector<uint8_t> header;
+            ++s_headerRuns;
+            if (!vp2sMeshHeader(code.data(), record.dataBefore.data(), header))
+                continue; // another program at 0x06e0 in this build
+            if (record.packets.empty() || header != record.packets[0])
+            {
+                if (s_headerBad++ < 5u)
+                    std::printf("header run %zu: packets %zu first %zu bytes\n", s_headerRuns, record.packets.size(),
+                                record.packets.empty() ? size_t{0} : record.packets[0].size());
+                continue;
+            }
+            meshPacket = 1;
+        }
+        if (record.startPC == 0x0770u || record.startPC == 0x06e0u)
         {
             static size_t s_prefixRuns = 0, s_prefixBad = 0;
             std::vector<uint8_t> prefix;
             const bool known = vp2sMeshPrefix(code.data(), record.dataBefore.data(), record.top, prefix);
             ++s_prefixRuns;
-            if (!known || record.packets.size() < 2u || prefix != record.packets[0])
+            if (!known || record.packets.size() < meshPacket + 2u || prefix != record.packets[meshPacket])
             {
                 if (s_prefixBad++ < 5u)
                     std::printf("prefix run %zu: known %d packets %zu first %zu bytes\n", s_prefixRuns, known ? 1 : 0, record.packets.size(),
-                                record.packets.empty() ? size_t{0} : record.packets[0].size());
+                                record.packets.size() <= meshPacket ? size_t{0} : record.packets[meshPacket].size());
                 continue;
             }
-            meshPacket = 1;
+            meshPacket += 1;
             if ((s_prefixRuns % 500u) == 0u)
                 std::printf("prefix: %zu runs, %zu differ\n", s_prefixRuns, s_prefixBad);
         }
@@ -152,7 +234,10 @@ int main(int argc, char **argv)
             ok = vp2sBuildMeshPacket(code.data(), record.dataBefore.data(), record.stateBefore, record.top, packet);
         seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() / repeat;
         if (!ok)
+        {
+            ++rejections[vp2sMeshRejection()];
             continue;
+        }
         ++built;
         const std::vector<Vertex> got = parse(packet);
         const std::vector<Vertex> want = record.packets.size() <= meshPacket ? std::vector<Vertex>{} : parse(record.packets[meshPacket]);
@@ -229,5 +314,7 @@ int main(int argc, char **argv)
     std::printf("mismatches: count=%zu st=%zu rgba=%zu xyz=%zu fog=%zu adc=%zu\n", badCount, badSt, badRgba, badXyz,
                 badFog, badAdc);
     std::printf("native build: %.3f ms total, %.2f us per run\n", seconds * 1000.0, runs ? seconds * 1e6 / runs : 0.0);
+    for (const auto &[reason, count] : rejections)
+        std::printf("not built, reason %d: %zu runs\n", reason, count);
     return 0;
 }
