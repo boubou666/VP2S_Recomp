@@ -89,12 +89,60 @@ int main(int argc, char **argv)
     Vu1TraceRecord record;
     size_t runs = 0, built = 0, vertices = 0, badSt = 0, badRgba = 0, badXyz = 0, badAdc = 0, badFog = 0, badCount = 0;
     std::map<int, size_t> rejections; // vp2sMeshRejection() of the runs not built natively
+    std::map<std::pair<uint32_t, uint32_t>, std::pair<size_t, size_t>> images; // (code image, start): runs, built
+    uint32_t image = 0;
     double seconds = 0.0;
     std::vector<uint8_t> packet;
     while (readVu1TraceRecord(in, record))
     {
         if (!record.code.empty())
+        {
             code = record.code;
+            // FNV-1a 32 of the 16 KiB, as vp2s_vu1_hle.cpp's program log names images.
+            image = 2166136261u;
+            for (size_t i = 0; i < 16384u && i < code.size(); ++i)
+                image = (image ^ code[i]) * 16777619u;
+        }
+        // VP2S_CHECK_EXTRACT=<image hex>:<start hex>:<dir>:<max>: the first runs of that program as files for offline
+        // study: memory and registers before and after, and each packet it kicked.
+        static const char *s_extract = std::getenv("VP2S_CHECK_EXTRACT");
+        if (s_extract)
+        {
+            static uint32_t s_image = 0, s_start = 0;
+            static unsigned s_max = 0, s_done = 0;
+            static char s_dir[512] = {};
+            static const bool s_parsed = std::sscanf(s_extract, "%x:%x:%511[^:]:%u", &s_image, &s_start, s_dir, &s_max) == 4;
+            if (s_parsed && image == s_image && record.startPC == s_start && record.resume == 0u && s_done < s_max)
+            {
+                char path[600];
+                const auto save = [&](const char *what, const void *bytes, size_t size) {
+                    std::snprintf(path, sizeof(path), "%s/run%03u_%s.bin", s_dir, s_done, what);
+                    if (FILE *f = std::fopen(path, "wb"))
+                    {
+                        std::fwrite(bytes, 1, size, f);
+                        std::fclose(f);
+                    }
+                };
+                save("before", record.dataBefore.data(), record.dataBefore.size());
+                save("after", record.dataAfter.data(), record.dataAfter.size());
+                save("state_before", &record.stateBefore, sizeof(record.stateBefore));
+                save("state_after", &record.stateAfter, sizeof(record.stateAfter));
+                save("code", code.data(), code.size());
+                for (size_t k = 0; k < record.packets.size(); ++k)
+                {
+                    char what[32];
+                    std::snprintf(what, sizeof(what), "packet%02zu", k);
+                    save(what, record.packets[k].data(), record.packets[k].size());
+                }
+                std::snprintf(path, sizeof(path), "%s/run%03u_info.txt", s_dir, s_done);
+                if (FILE *f = std::fopen(path, "w"))
+                {
+                    std::fprintf(f, "top %u itop %u packets %zu\n", record.top, record.itop, record.packets.size());
+                    std::fclose(f);
+                }
+                ++s_done;
+            }
+        }
         if (record.startPC == 0x0238u && record.resume == 0u)
         {
             // Program 0x0238 (vp2sVu1Hle's object set-up): the rows and registers it leaves, to float rounding.
@@ -194,6 +242,8 @@ int main(int argc, char **argv)
         // Program 0x0770: its register prefix is the first packet it kicks, the object the second. Program 0x06e0: its
         // register header first, then as 0x0770.
         size_t meshPacket = 0;
+        auto &imageCount = images[{image, record.startPC}];
+        ++imageCount.first;
         if (record.startPC == 0x06e0u)
         {
             static size_t s_headerRuns = 0, s_headerBad = 0;
@@ -239,6 +289,7 @@ int main(int argc, char **argv)
             continue;
         }
         ++built;
+        ++imageCount.second;
         const std::vector<Vertex> got = parse(packet);
         const std::vector<Vertex> want = record.packets.size() <= meshPacket ? std::vector<Vertex>{} : parse(record.packets[meshPacket]);
         if (got.size() != want.size())
@@ -314,6 +365,8 @@ int main(int argc, char **argv)
     std::printf("mismatches: count=%zu st=%zu rgba=%zu xyz=%zu fog=%zu adc=%zu\n", badCount, badSt, badRgba, badXyz,
                 badFog, badAdc);
     std::printf("native build: %.3f ms total, %.2f us per run\n", seconds * 1000.0, runs ? seconds * 1e6 / runs : 0.0);
+    for (const auto &[key, count] : images)
+        std::printf("image %08x program %04x: %zu runs, %zu built\n", key.first, key.second, count.first, count.second);
     for (const auto &[reason, count] : rejections)
         std::printf("not built, reason %d: %zu runs\n", reason, count);
     return 0;

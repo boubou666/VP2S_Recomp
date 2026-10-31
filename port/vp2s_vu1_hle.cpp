@@ -111,7 +111,21 @@ namespace
         return v;
     }
 
-    // The library build's layout, followed from its code: the BAL at 0x08a8 to the set-up dispatcher; there, the
+    // The mesh program's call into its set-up dispatcher: BAL at 0x08a8, or (the forest build) IADDIU vi01 then JALR
+    // vi15, vi01 at 0x08a8 / 0x08b0. 0: neither.
+    uint32_t meshDispatcher(const uint8_t *code)
+    {
+        const uint32_t first = lower(code, 0x08a8u);
+        if (((first >> 25) & 0x7Fu) == 0x21u)
+            return static_cast<uint32_t>(0x08a8 + 8 + signedImm11(first) * 8);
+        const uint32_t jalr = lower(code, 0x08b0u);
+        if (((first >> 25) & 0x7Fu) == 0x08u && ((first >> 16) & 0x1Fu) == 1u && ((first >> 11) & 0x1Fu) == 0u &&
+            ((jalr >> 25) & 0x7Fu) == 0x25u && ((jalr >> 16) & 0x1Fu) == 15u && ((jalr >> 11) & 0x1Fu) == 1u)
+            return ((((first >> 21) & 0xFu) << 11) | (first & 0x7FFu)) * 8u;
+        return 0u;
+    }
+
+    // The library build's layout, followed from its code: the call at 0x08a8 to the set-up dispatcher; there, the
     // IADDIU into vi09 is the set-up table and the IADDIU vi01, vi01, n give the lighting tables (D, the last, is
     // the one with mem[14].w == 0). Then whether lighting mode 1 clamps the fourth light (MAXx.xyzw) or not.
     struct Layout
@@ -126,10 +140,9 @@ namespace
     Layout findLayout(const uint8_t *code)
     {
         Layout layout;
-        const uint32_t bal = lower(code, 0x08a8u);
-        if (((bal >> 25) & 0x7Fu) != 0x21u)
+        const uint32_t dispatcher = meshDispatcher(code);
+        if (dispatcher == 0u)
             return layout;
-        const uint32_t dispatcher = static_cast<uint32_t>(0x08a8 + 8 + signedImm11(bal) * 8);
         bool haveSetup = false;
         uint32_t tableD = 0;
         for (uint32_t pc = dispatcher; pc < dispatcher + 0x400u && pc < 0x4000u; pc += 8u)
@@ -795,25 +808,30 @@ namespace
     // layout, 12 cull sum 3, 13 VI41.z set, 14 setup or lighting, 15 later.
     // The other VU1 programs by start PC since the last line (VP2S_NATIVE_MESH_LOG), most run first.
     std::mutex g_otherMutex;
-    std::unordered_map<uint32_t, uint64_t> g_otherPrograms;
+    std::unordered_map<uint64_t, uint64_t> g_otherPrograms; // (code image hash << 32 | start), runs
 
-    void noteOtherProgram(uint32_t pc)
+    void noteOtherProgram(uint32_t pc, const uint8_t *code)
     {
+        // The code image as FNV-1a 32 of its 16 KiB (build/vu1_lift's code dumps can be matched to it).
+        uint32_t image = 2166136261u;
+        for (size_t i = 0; code && i < 16384u; ++i)
+            image = (image ^ code[i]) * 16777619u;
         std::lock_guard<std::mutex> lock(g_otherMutex);
-        ++g_otherPrograms[pc];
+        ++g_otherPrograms[(static_cast<uint64_t>(image) << 32) | pc];
     }
 
     std::string otherProgramsLine()
     {
         std::lock_guard<std::mutex> lock(g_otherMutex);
-        std::vector<std::pair<uint32_t, uint64_t>> programs(g_otherPrograms.begin(), g_otherPrograms.end());
+        std::vector<std::pair<uint64_t, uint64_t>> programs(g_otherPrograms.begin(), g_otherPrograms.end());
         g_otherPrograms.clear();
         std::sort(programs.begin(), programs.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
         std::string line = " | other programs:";
-        char buffer[32];
-        for (size_t i = 0; i < programs.size() && i < 8u; ++i)
+        char buffer[48];
+        for (size_t i = 0; i < programs.size() && i < 12u; ++i)
         {
-            std::snprintf(buffer, sizeof(buffer), " %04x=%llu", programs[i].first, static_cast<unsigned long long>(programs[i].second));
+            std::snprintf(buffer, sizeof(buffer), " %04x@%08x=%llu", static_cast<unsigned>(programs[i].first & 0xffffu),
+                          static_cast<unsigned>(programs[i].first >> 32), static_cast<unsigned long long>(programs[i].second));
             line += buffer;
         }
         return line;
@@ -1236,10 +1254,9 @@ bool vp2sMeshPrefix(const uint8_t *code, const uint8_t *data, uint32_t top, std:
     const uint64_t hash = fnv(bytes.data(), bytes.size());
     if (hash != 0x633d036a69d5ea3aull && hash != 0x8ae32d0e3bb604b6ull)
         return false;
-    const uint32_t bal = lower(code, 0x08a8u);
-    if (((bal >> 25) & 0x7Fu) != 0x21u)
+    const uint32_t dispatcher = meshDispatcher(code);
+    if (dispatcher == 0u)
         return false;
-    const uint32_t dispatcher = static_cast<uint32_t>(0x08a8 + 8 + signedImm11(bal) * 8);
     const uint32_t iaddiu = lower(code, 0x07a0u);
     if ((((iaddiu >> 21) & 0xFu) << 11 | (iaddiu & 0x7FFu)) * 8u != dispatcher)
         return false;
@@ -1286,7 +1303,7 @@ bool vp2sVu1Hle(ps2x::native::Vu1HleRun &run)
     {
         static const bool s_log = std::getenv("VP2S_NATIVE_MESH_LOG") != nullptr;
         if (s_log)
-            noteOtherProgram(run.startPc);
+            noteOtherProgram(run.startPc, run.code);
         countHle(10);
         return false;
     }
