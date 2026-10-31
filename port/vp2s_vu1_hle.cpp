@@ -1316,11 +1316,6 @@ namespace
         }();
         if (!s_pcs.empty() && std::find(s_pcs.begin(), s_pcs.end(), run.startPc) == s_pcs.end())
             return false;
-        // 0x06e0's 2D (the HUD and minimap pieces, drawn under its own SCISSOR / FRAME changes) washes the battle
-        // out white natively: its packets go on as before until that is understood (VP2S_NATIVE_PROGRAMS_PCS lists it
-        // to try).
-        if (s_pcs.empty() && run.startPc == 0x06e0u)
-            return false;
         auto &cache = ps2x::native::textures();
         const std::array<uint64_t, 0x80> game = cache.gameRegisters();
         DrawRegisters regs[2];
