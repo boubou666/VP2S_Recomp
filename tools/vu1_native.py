@@ -40,7 +40,8 @@ def main():
     ap.add_argument('--lifter', default=os.path.join(ROOT, 'external', 'PS2Recomp', 'tools', 'vu1_lift.py'))
     # Programs drawn natively by vp2s_vu1_hle.cpp (the meshes, the object set-up, the shadow): not lifted.
     ap.add_argument('--skip', default='880,770,238,6f0,678')
-    ap.add_argument('--max-kib', type=int, default=6 * 1024, help='larger output is left out (MSVC runs out of heap)')
+    ap.add_argument('--max-kib', type=int, default=6 * 1024, help='larger output is built without optimisation')
+    ap.add_argument('--max-big-kib', type=int, default=32 * 1024, help='larger output is left out')
     a = ap.parse_args()
     spec_loader = importlib.util.spec_from_file_location('vu1_lift', a.lifter)
     lift = importlib.util.module_from_spec(spec_loader)
@@ -91,16 +92,22 @@ def main():
             except lift.GenError as error:
                 print(f'{name}:{entry:04x}: not lifted ({error})')
                 continue
+            # Larger output goes to big/, which the build compiles without optimisation (MSVC's optimiser runs out of
+            # heap on it); past --max-big-kib it is left out.
+            out_dir = a.out
             if len(text) > a.max_kib * 1024:
-                print(f'{name}:{entry:04x}: left out ({len(text) // 1024} KiB)')
-                continue
+                if len(text) > a.max_big_kib * 1024:
+                    print(f'{name}:{entry:04x}: left out ({len(text) // 1024} KiB)')
+                    continue
+                out_dir = os.path.join(a.out, 'big')
+                os.makedirs(out_dir, exist_ok=True)
             done.add((entry, h))
             listed_ranges = ', '.join(f'{first}, {count}' for first, count in ranges)
             text += ('\n#include "vp2s_vu1_programs.h"\n\nnamespace\n{\n'
                      f'    const uint16_t kRanges[] = {{{listed_ranges}}};\n'
                      f'    const bool g_registered = vp2sRegisterVu1Program({entry:#x}u, kRanges, {len(ranges)}u, 0x{h:016x}ull,\n'
                      f'                                                     &ps2x::vu1lift::{function}<true>);\n}}\n')
-            lift.write(os.path.join(a.out, spec['file']), text)
+            lift.write(os.path.join(out_dir, spec['file']), text)
             print(f'{name}:{entry:04x}: {nodes} timed pairs, {len(text) // 1024} KiB -> {spec["file"]}')
 
 

@@ -289,6 +289,19 @@ namespace
                     }
                 }
                 break;
+            case 44: // fade by facing: alpha = data.x + data.w * min(1 + (rows 77..79 .z) . normal, 1)^2
+            {
+                const Vec4 r0 = mem.vf(77u), r1 = mem.vf(78u), r2 = mem.vf(79u), d = mem.vf(base);
+                for (int32_t k = 0; k < count; ++k)
+                {
+                    const uint32_t v = vertices + 4u * static_cast<uint32_t>(k);
+                    const Vec4 n = mem.vf(v);
+                    float f = ((1.0f + r0[2] * n[0]) + r1[2] * n[1]) + r2[2] * n[2];
+                    f = std::min(f, 1.0f);
+                    mem.setI(v + 2u, 3u, static_cast<int32_t>(d[0] + d[3] * (f * f)));
+                }
+                break;
+            }
             case 48: // texture scrolling: offset .zw at mem[38 + data.x], added to the 12-bit UV
             {
                 const Vec4 off = mem.vf(38u + static_cast<uint32_t>(mem.i(base, 0)));
@@ -1316,7 +1329,25 @@ namespace
         }();
         if (!s_pcs.empty() && std::find(s_pcs.begin(), s_pcs.end(), run.startPc) == s_pcs.end())
             return false;
+        // The 0x06e0 effect passes that start IADDIU vi07, vi14, 6 / vi08, vi14, 0x10 (the large ones draw the field's
+        // screen effects wrong natively: a pass between targets not followed yet) stay packets, unless listed.
+        if (s_pcs.empty() && run.startPc == 0x06e0u && lower(run.code, 0x06e8u) == 0x10077006u && lower(run.code, 0x06f0u) == 0x10087010u)
+            return false;
         auto &cache = ps2x::native::textures();
+        // VP2S_NATIVE_PROGRAMS_LOG: why a packet stays a packet, once per program, reason and detail.
+        const auto reject = [&](int why, uint64_t detail) {
+            static const bool s_log = std::getenv("VP2S_NATIVE_PROGRAMS_LOG") != nullptr;
+            static std::mutex s_mutex;
+            static std::unordered_map<uint64_t, bool> s_seen;
+            if (s_log)
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                if (s_seen.emplace((uint64_t{run.startPc} << 48) ^ (uint64_t(why) << 40) ^ detail, true).second && s_seen.size() < 200u)
+                    std::fprintf(stderr, "[vp2s-programs] pc %04x kept as a packet: reason %d detail %llx\n", run.startPc, why,
+                                 static_cast<unsigned long long>(detail));
+            }
+            return false;
+        };
         const std::array<uint64_t, 0x80> game = cache.gameRegisters();
         DrawRegisters regs[2];
         for (uint32_t c = 0; c < 2u; ++c)
@@ -1331,7 +1362,7 @@ namespace
         uint64_t prim = game[0x00u];
         const uint64_t prmodecont = game[0x1Au];
         if ((prmodecont & 1u) == 0u)
-            return false; // PRMODE supplies the attributes: not seen in VP2's programs
+            return reject(1, prmodecont); // PRMODE supplies the attributes: not seen in VP2's programs
         struct Batch
         {
             ps2x::native::Material material;
@@ -1440,7 +1471,7 @@ namespace
             const uint32_t nloop = static_cast<uint32_t>(tag & 0x7FFFu), flg = static_cast<uint32_t>((tag >> 58) & 3u);
             const uint32_t nreg = ((tag >> 60) & 15u) == 0u ? 16u : static_cast<uint32_t>((tag >> 60) & 15u);
             if (flg != 0u)
-                return false;
+                return reject(2, tag);
             if ((tag >> 46) & 1u) // PRE
             {
                 prim = (tag >> 47) & 0x7FFu;
@@ -1450,7 +1481,7 @@ namespace
                 for (uint32_t r = 0; r < nreg; ++r, at += 16u)
                 {
                     if (at + 16u > packet.size())
-                        return false;
+                        return reject(3, at);
                     switch ((regList >> (4u * r)) & 15u)
                     {
                     case 0x0: prim = u64(at) & 0x7FFu; startPrim(); break;
@@ -1482,20 +1513,25 @@ namespace
                             break; // passed on to the GS below; TEX1 / TEXA / FOGCOL / TEXFLUSH / PRMODECONT / XYOFFSET /
                                    // SCISSOR / FRAME / DIMX / DTHE / COLCLAMP / PABE as the GS keeps them
                         default:
-                            return false;
+                            return reject(4, address);
                         }
+                        // Where the picture goes (FRAME, XYOFFSET, SCISSOR) changing after a primitive: the draws would
+                        // land in one target at the packet's marker. Such a pass (a frame copy, a blur) stays a packet.
+                        if ((address == 0x4C || address == 0x4D || address == 0x18 || address == 0x19 || address == 0x40 ||
+                             address == 0x41) && !batches.empty())
+                            return reject(9, address);
                         if (address == 0x1Au && (data & 1u) == 0u)
-                            return false;
+                            return reject(5, data);
                         registerWrites.insert(registerWrites.end(), packet.begin() + static_cast<std::ptrdiff_t>(at),
                                               packet.begin() + static_cast<std::ptrdiff_t>(at + 16u));
                         break;
                     }
                     default:
-                        return false;
+                        return reject(6, (regList >> (4u * r)) & 15u);
                     }
                     const uint32_t type = static_cast<uint32_t>(prim & 7u);
                     if (type < 3u || type == 7u)
-                        return false; // points, lines
+                        return reject(7, prim); // points, lines
                 }
             if ((tag >> 15) & 1u)
                 break;
@@ -1516,7 +1552,7 @@ namespace
         // A texture no upload of the game makes (the frame itself, sampled by the full-screen effects): not native yet.
         for (const Batch &batch : batches)
             if (batch.material.textured && !batch.triangles.empty() && !cache.texture(batch.material.tex0, batch.material.texa))
-                return false;
+                return reject(8, batch.material.tex0);
         // VP2S_NATIVE_PROGRAMS_LOG=<n>: each distinct (program, texture, blend, context) drawn this way, once, up to n.
         static int s_logLeft = [] { const char *v = std::getenv("VP2S_NATIVE_PROGRAMS_LOG"); return v ? std::atoi(v) : 0; }();
         static std::unordered_map<uint64_t, bool> s_logged;
@@ -1546,6 +1582,7 @@ namespace
                 renderer.beginGroup(group);
                 renderer.draw(batch.material, s_identity, batch.triangles.data(), static_cast<uint32_t>(batch.triangles.size()));
             }
+            cache.noteDraw(batch.context); // the texture store sees the picture drawn there (a frame copy sampled later)
             run.nativeDraw(run.nativeUser, group, static_cast<int>(batch.context));
         }
         return true;
