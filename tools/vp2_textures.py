@@ -101,7 +101,10 @@ def convert(data, at):
     _, pdpsm, pdbw, pw, ph, pixels = pixel_blocks[0]
     table = palette_table(data, palette_blocks[0][0]) if palette_blocks else bytes(1024)
     if psm in (0x13, 0x14) and pdpsm == 0x00:
-        # 4- or 8-bit texels kept as a CT32 image in the GS's memory order: laid out and read back by vp2s_texconv.
+        # 4- or 8-bit texels kept as a CT32 picture in the GS's memory order (info flag 0x2000): the header's w x h is
+        # that picture; the texture is 1 << log2 w by 1 << log2 h (2w x 2h for T8, 2w x 4h for T4). Laid out and read
+        # back by vp2s_texconv.
+        w, h = 1 << tw, 1 << th
         if not CONVERTER or not os.path.exists(CONVERTER):
             return None, 'no vp2s_texconv'
         job, result = os.path.join(TEMP, 'block.bin'), os.path.join(TEMP, 'out.bin')
@@ -157,7 +160,8 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     if not os.path.exists(a.index):
-        json.dump(scan(a.assets), open(a.index, 'w'))
+        import vp2_texture_keys
+        json.dump(vp2_texture_keys.scan(a.assets), open(a.index, 'w'))
     index = json.load(open(a.index))
     results = Counter()
     cache = {}
