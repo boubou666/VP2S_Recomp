@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 #include <filesystem>
 #include <iostream>
 #include <unordered_map>
@@ -267,11 +268,32 @@ namespace
         const auto it = g_traced.find(ctx->pc);
         if (it == g_traced.end())
             return;
-        if (it->second.second++ < 40u)
-            std::cout << std::hex << "[vp2s-hook] 0x" << ctx->pc << " a0=0x" << reg(ctx, 4) << " a1=0x" << reg(ctx, 5)
-                      << " a2=0x" << reg(ctx, 6) << " a3=0x" << reg(ctx, 7) << " ra=0x" << reg(ctx, 31) << std::dec
-                      << std::endl;
+        const uint32_t pc = ctx->pc;
+        const uint64_t a0 = reg(ctx, 4), a1 = reg(ctx, 5), a2 = reg(ctx, 6), a3 = reg(ctx, 7), t0 = reg(ctx, 8), t1 = reg(ctx, 9),
+                       ra = reg(ctx, 31);
+        // Each distinct (function, a0..a3, ra) once, up to 300 a function.
+        static std::unordered_map<uint64_t, bool> s_seen;
+        const uint64_t key = ((uint64_t{pc} * 31u + a0) * 31u + a1) * 31u + a2 * 7u + a3 * 3u + ra;
+        const bool show = s_seen.emplace(key, true).second && it->second.second++ < 300u;
         it->second.first(rdram, ctx, runtime);
+        // VP2S_HOOK_SAVE=<dir>: with each line shown, 64 KiB of guest memory from a1 written to <dir>/<pc>_<a2>_<a3>.bin
+        // (the game's data a hooked routine works on, studied offline; game data: build tree only, never committed).
+        static const char *s_save = std::getenv("VP2S_HOOK_SAVE");
+        if (show && s_save && (a1 & 0x1FFFFFFu) + 0x10000u <= PS2_RAM_SIZE)
+        {
+            char path[600];
+            std::snprintf(path, sizeof(path), "%s/%x_%llx_%llx.bin", s_save, pc, static_cast<unsigned long long>(a2),
+                          static_cast<unsigned long long>(a3));
+            if (FILE *f = std::fopen(path, "wb"))
+            {
+                std::fwrite(rdram + (a1 & 0x1FFFFFFu), 1, 0x10000u, f);
+                std::fclose(f);
+            }
+        }
+        if (show)
+            std::cout << std::hex << "[vp2s-hook] 0x" << pc << " a0=0x" << a0 << " a1=0x" << a1 << " a2=0x" << a2 << " a3=0x"
+                      << a3 << " t0=0x" << t0 << " t1=0x" << t1 << " ra=0x" << ra << " -> v0=0x" << reg(ctx, 2) << std::dec
+                      << std::endl;
     }
 
     void applyVp2s(PS2Runtime &runtime)
@@ -280,11 +302,28 @@ namespace
         {
             for (const char *cursor = hooks; *cursor;)
             {
+                // <address> in the main program, or <module>:<address> in a code module (mod001:0x29d8f0).
+                std::string module;
+                if (const char *colon = std::strchr(cursor, ':'); colon && (!std::strchr(cursor, ',') || colon < std::strchr(cursor, ',')))
+                {
+                    module.assign(cursor, colon);
+                    cursor = colon + 1;
+                }
                 char *end = nullptr;
                 const uint32_t address = static_cast<uint32_t>(std::strtoul(cursor, &end, 0));
                 if (end == cursor)
                     break;
-                if (PS2Runtime::RecompiledFunction original = runtime.lookupFunction(address))
+                if (!module.empty())
+                {
+                    const ps2_overlays::Module *m = ps2_overlays::findModule(module.c_str());
+                    if (m && address >= m->tableBase && address < m->tableEnd && ((address - m->tableBase) >> 2) < m->slotCount &&
+                        m->table[(address - m->tableBase) >> 2])
+                    {
+                        g_traced[address] = {m->table[(address - m->tableBase) >> 2], 0u};
+                        ps2_overlays::replaceModuleFunction(module.c_str(), address, &traceCall);
+                    }
+                }
+                else if (PS2Runtime::RecompiledFunction original = runtime.lookupFunction(address))
                 {
                     g_traced[address] = {original, 0u};
                     runtime.replaceFunction(address, &traceCall);

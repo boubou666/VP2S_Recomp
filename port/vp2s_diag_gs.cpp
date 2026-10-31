@@ -5,6 +5,9 @@
 #include "runtime/gs/gs_frontend.h"
 
 #include <array>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -16,6 +19,26 @@ namespace ps2_stubs
 
 void printGsDiagnostics(PS2Runtime &runtime)
 {
+    // VP2S_EE_RAM_DUMP=<seconds>[,<path>]: the 32 MiB of EE RAM written once that long after the first diagnostics
+    // (the game's own data structures studied offline; game data: build tree only, never committed).
+    if (const char *dump = std::getenv("VP2S_EE_RAM_DUMP"))
+    {
+        static const auto s_start = std::chrono::steady_clock::now();
+        static bool s_done = false;
+        const double after = std::atof(dump);
+        const char *comma = std::strchr(dump, ',');
+        const std::string path = comma ? std::string(comma + 1) : std::string("eeram.bin");
+        if (!s_done && std::chrono::duration<double>(std::chrono::steady_clock::now() - s_start).count() >= after)
+        {
+            s_done = true;
+            if (FILE *f = std::fopen(path.c_str(), "wb"))
+            {
+                std::fwrite(runtime.memory().getRDRAM(), 1, PS2_RAM_SIZE, f);
+                std::fclose(f);
+                std::cout << "[vp2s-gs] EE RAM written to " << path << std::endl;
+            }
+        }
+    }
     const GSRegisters &regs = runtime.memory().gs();
     std::cout << std::hex << "[vp2s-gs] PMODE=0x" << regs.pmode << " SMODE2=0x" << regs.smode2 << " DISPFB1=0x"
               << regs.dispfb1 << " DISPLAY1=0x" << regs.display1 << " DISPFB2=0x" << regs.dispfb2

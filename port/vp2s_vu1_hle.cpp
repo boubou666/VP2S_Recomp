@@ -291,6 +291,13 @@ namespace
                 break;
             case 44: // fade by facing: alpha = data.x + data.w * min(1 + (rows 77..79 .z) . normal, 1)^2
             {
+                // VP2S_SETUP44=0: VU1 runs these (to record them for vp2s_hle_check).
+                static const bool s_off = [] { const char *v = std::getenv("VP2S_SETUP44"); return v && v[0] == '0'; }();
+                if (s_off)
+                {
+                    noteUnhandled("setup routine/slot", routine, r);
+                    return false;
+                }
                 const Vec4 r0 = mem.vf(77u), r1 = mem.vf(78u), r2 = mem.vf(79u), d = mem.vf(base);
                 for (int32_t k = 0; k < count; ++k)
                 {

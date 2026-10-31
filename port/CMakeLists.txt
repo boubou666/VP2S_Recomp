@@ -103,6 +103,10 @@ endif()
 
 # The native version of VP2's mesh microprogram checked against recorded VU1 runs (docs/vp2_vu1.md), and the
 # programs as C++ against the same runs.
+# VP2's textures converted offline (tools/vp2_textures.py): the GS layout functions run in this tool only.
+add_executable(vp2s_texconv "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_texconv.cpp")
+target_link_libraries(vp2s_texconv PRIVATE ps2_runtime)
+
 add_executable(vp2s_hle_check "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_hle_check.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/vp2s_vu1_hle.cpp")
 target_link_libraries(vp2s_hle_check PRIVATE ps2_runtime vp2s_vu1_native)
 if(MSVC)
