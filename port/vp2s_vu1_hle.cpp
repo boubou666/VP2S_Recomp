@@ -1322,18 +1322,19 @@ namespace
         if (s_pcs.empty() && run.startPc == 0x06e0u)
             return false;
         auto &cache = ps2x::native::textures();
+        const std::array<uint64_t, 0x80> game = cache.gameRegisters();
         DrawRegisters regs[2];
         for (uint32_t c = 0; c < 2u; ++c)
         {
-            regs[c].tex0 = cache.gameRegister(0x06u + c);
-            regs[c].clamp = cache.gameRegister(0x08u + c);
-            regs[c].alpha = cache.gameRegister(0x42u + c);
-            regs[c].test = cache.gameRegister(0x47u + c);
-            regs[c].fba = cache.gameRegister(0x4Au + c);
-            regs[c].zbuf = cache.gameRegister(0x4Eu + c);
+            regs[c].tex0 = game[0x06u + c];
+            regs[c].clamp = game[0x08u + c];
+            regs[c].alpha = game[0x42u + c];
+            regs[c].test = game[0x47u + c];
+            regs[c].fba = game[0x4Au + c];
+            regs[c].zbuf = game[0x4Eu + c];
         }
-        uint64_t prim = cache.gameRegister(0x00u);
-        const uint64_t prmodecont = cache.gameRegister(0x1Au);
+        uint64_t prim = game[0x00u];
+        const uint64_t prmodecont = game[0x1Au];
         if ((prmodecont & 1u) == 0u)
             return false; // PRMODE supplies the attributes: not seen in VP2's programs
         struct Batch
