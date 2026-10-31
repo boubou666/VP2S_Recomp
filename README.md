@@ -71,6 +71,22 @@ What is still emulated today, and the order it is removed in (branch `vp2s/nativ
 | Rest of the game (modules captured as they are met, see below) | 🔧 |
 | Widescreen, higher resolution | ⏳ |
 
+**Native port** (no PS2 hardware emulation left, not even a small part: the shared goal of the fork's ports). Native
+means the game's draws built straight from its own data (vertices, matrices, materials), with no GIF packet, no GS
+state machine and no copy of GS memory in between.
+
+| Layer | |
+|---|:---:|
+| IOP modules (the ten the game loads, its sound driver included) recompiled to C++, none interpreted | ✅ |
+| Sound on the PC's clock (today: emulated SPU2; next: a native mixer on wall time, `PS2X_SPU2_WALLCLOCK`) | ⏳ |
+| No paraLLEl-GS: OpenGL on the GPU (`PS2X_GS_RENDERER=parallel` kept as a fallback) | ✅ |
+| Frame loop on the PC's clock (`PS2X_FRAME_CAP`, real frame time as the game's step; `VP2S_NATIVE=0`: PAL vblank) | ✅ |
+| VU0 macro mode recompiled with the game code | ✅ |
+| VU1 mesh microprogram (0x0880, almost every model) translated to C++ (left: set-up routine 36, lighting mode 3, the three small microprograms) | 🔧 |
+| Models drawn natively from the translated microprogram's vertices, no GS packets built for them | 🔧 |
+| Menus, text, 2D and effects drawn natively, no GS front end and no copy of GS memory | ⏳ |
+| VIF1 / DMA: the native microprogram fed from main memory | ⏳ |
+
 ✅ works · 🔧 in progress · ⏳ not reached yet
 
 ### Toward a full recompilation
