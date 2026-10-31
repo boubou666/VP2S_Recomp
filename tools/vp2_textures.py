@@ -91,6 +91,11 @@ def convert(data, at):
     blocks = transfers(data, at, size * 2 + 0x2000)
     pixel_blocks = [b for b in blocks if b[3] * b[4] * BPP.get(b[1], 32) // 8 == size or (b[3], b[4]) == (w, h)]
     palette_blocks = [b for b in blocks if b[1] == 0x00 and (b[3], b[4]) in ((16, 16), (16, 2), (8, 2))]
+    if not palette_blocks:
+        # The palette sent on its own (the loader allocates it from the resource's info block, before the header):
+        # the nearest palette transfer before the texture.
+        before = [b for b in transfers(data, max(0, at - 0x2000), 0x2000 - 16) if b[0] < at]
+        palette_blocks = [b for b in before if b[1] == 0x00 and (b[3], b[4]) in ((16, 16), (16, 2), (8, 2))][-1:]
     if not pixel_blocks:
         return None, 'no pixel block'
     _, pdpsm, pdbw, pw, ph, pixels = pixel_blocks[0]
